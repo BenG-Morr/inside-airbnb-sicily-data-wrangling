@@ -73,6 +73,62 @@ def count_duplicate_listing_ids(data: pd.DataFrame) -> int | None:
     return int(data["id"].duplicated().sum())
 
 
+def parse_price_values(data: pd.DataFrame) -> pd.Series:
+    """Convert the raw price strings to numeric values for profiling."""
+    if "price" not in data.columns:
+        raise KeyError("Expected column 'price' was not found.")
+
+    cleaned_price = (
+        data["price"]
+        .astype("string")
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+    )
+
+    return pd.to_numeric(cleaned_price, errors="coerce")
+
+
+def build_price_missingness_by_source(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Summarise missing price values for each listing source."""
+    required_columns = {"price", "source"}
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(f"Missing required columns: {missing_names}")
+
+    price_missing = data["price"].isna()
+
+    summary = (
+        data.assign(price_missing=price_missing)
+        .groupby("source", dropna=False)
+        .agg(
+            row_count=("price_missing", "size"),
+            missing_price_count=("price_missing", "sum"),
+        )
+        .reset_index()
+    )
+
+    summary["missing_price_percent"] = (
+        summary["missing_price_count"] / summary["row_count"] * 100
+    ).round(3)
+
+    return summary
+
+
+def write_price_missingness(
+    summary: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write the price-missingness summary to a CSV file."""
+    output_path = output_dir / "missing_price_by_source.csv"
+    summary.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def write_column_profile(
     profile: pd.DataFrame,
     output_dir: Path,
@@ -92,12 +148,19 @@ def main() -> None:
 
     data = load_dataset(args.input)
     column_profile = build_column_profile(data)
+    price_numeric = parse_price_values(data)
+    price_missingness = build_price_missingness_by_source(data)
 
     duplicate_rows = count_duplicate_rows(data)
     duplicate_ids = count_duplicate_listing_ids(data)
 
     output_path = write_column_profile(
         column_profile,
+        args.output_dir,
+    )
+
+    price_output_path = write_price_missingness(
+        price_missingness,
         args.output_dir,
     )
 
@@ -109,6 +172,15 @@ def main() -> None:
         print(f"Duplicate listing IDs: {duplicate_ids:,}")
 
     print(f"Column profile written to: {output_path.resolve()}")
+
+    print(
+        f"Parsed non-missing prices: "
+        f"{price_numeric.notna().sum():,}"
+    )
+    print(
+        "Price-missingness summary written to: "
+        f"{price_output_path.resolve()}"
+    )
 
 
 if __name__ == "__main__":
