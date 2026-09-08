@@ -1,0 +1,9 @@
+check,count
+non_missing_raw_price,51864
+price_parse_failures,0
+paired_numeric_prices,51863
+numeric_price_mismatches,0
+quote_currency_eur,52318
+quote_raw_missing,2612
+quote_currency_missing_in_present_quote,1943
+quote_currency_parse_errors,0
