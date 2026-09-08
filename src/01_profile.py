@@ -7,10 +7,20 @@ uniqueness information. It also reports basic row-level uniqueness checks.
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
 
+
+# Airbnb uses these textual labels for half bathrooms without including
+# an explicit numeric value. Their interpretation as 0.5 is validated
+# against rows where both textual and numeric bathroom data are available.
+HALF_BATH_LABELS = {
+    "half-bath",
+    "private half-bath",
+    "shared half-bath",
+}
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
@@ -105,6 +115,34 @@ def extract_quote_currency(value: object) -> str | None:
         return "__PARSE_ERROR__"
 
     return parsed_value.get("quote", {}).get("currency")
+
+
+def parse_bathroom_count(value: object) -> float | None:
+    """Extract a numeric bathroom count from `bathrooms_text`.
+
+    Most values begin with a numeric count, such as `1 bath`,
+    `2 shared baths` or `4.5 baths`. Airbnb also uses textual
+    half-bath labels without a leading number; these are represented
+    as 0.5 so that they can be compared with the numeric field.
+    """
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip().lower()
+
+    # These labels contain no numeric prefix, so they require explicit
+    # handling rather than the regular-expression parser below.
+    if text in HALF_BATH_LABELS:
+        return 0.5
+
+    # Standard Airbnb bathroom descriptions start with the bathroom
+    # count. The expression also accepts decimal counts such as 1.5.
+    match = re.match(r"^(\d+(?:\.\d+)?)\b", text)
+
+    if match is None:
+        return None
+
+    return float(match.group(1))
 
 
 def build_price_representation_checks(
@@ -213,6 +251,146 @@ def build_price_representation_checks(
     ]
 
     return pd.DataFrame(checks)
+
+
+def build_bathroom_checks(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compare numeric and textual bathroom representations.
+
+    The textual field is used only as an additional source of information.
+    Existing numeric bathroom values are not overwritten. Conflicting
+    representations are reported separately so that they can later be
+    investigated rather than resolved automatically.
+    """
+    required_columns = {
+        "id",
+        "bathrooms",
+        "bathrooms_text",
+    }
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(f"Missing required columns: {missing_names}")
+
+    parsed_text = data["bathrooms_text"].map(
+        parse_bathroom_count
+    )
+
+    numeric_missing = data["bathrooms"].isna()
+    text_missing = data["bathrooms_text"].isna()
+
+    # Distinguish absent bathroom text from text that exists but cannot
+    # be interpreted by the parser. This makes it possible to determine
+    # whether unrecoverable numeric values result from missing source
+    # information or from limitations in the parsing logic.
+    text_present_but_unparseable = (
+            data["bathrooms_text"].notna()
+            & parsed_text.isna()
+    )
+    numeric_and_text_missing = (
+            numeric_missing & text_missing
+    )
+
+    # A missing numeric value is considered recoverable only when the
+    # textual bathroom description can be parsed successfully.
+    recoverable_from_text = (
+        numeric_missing & parsed_text.notna()
+    )
+
+    # Agreement can only be assessed where both representations provide
+    # a numeric bathroom count.
+    comparable_values = (
+        data["bathrooms"].notna()
+        & parsed_text.notna()
+    )
+
+    # Validate the interpretation of Airbnb's textual half-bath labels
+    # against rows where an original numeric bathroom count is available.
+    normalised_bathroom_text = (
+        data["bathrooms_text"]
+        .astype("string")
+        .str.strip()
+        .str.lower()
+    )
+    half_bath_rows = normalised_bathroom_text.isin(
+        HALF_BATH_LABELS
+    )
+    comparable_half_bath_rows = (
+            half_bath_rows & data["bathrooms"].notna()
+    )
+    half_bath_mismatches = (
+        data.loc[comparable_half_bath_rows, "bathrooms"]
+        .ne(0.5)
+    )
+
+    numeric_difference = (
+        data.loc[comparable_values, "bathrooms"]
+        - parsed_text[comparable_values]
+    ).abs()
+
+    # A small tolerance prevents irrelevant floating-point differences
+    # from being classified as genuine discrepancies.
+    bathroom_tolerance = 0.001
+    conflicts = numeric_difference > bathroom_tolerance
+
+    checks = [
+        {
+            "check": "missing_numeric_bathrooms",
+            "count": int(numeric_missing.sum()),
+        },
+        {
+            "check": "missing_bathrooms_text",
+            "count": int(text_missing.sum()),
+        },
+        {
+            "check": "recoverable_missing_numeric_bathrooms",
+            "count": int(recoverable_from_text.sum()),
+        },
+        {
+            "check": "missing_numeric_and_text",
+            "count": int(numeric_and_text_missing.sum()),
+        },
+        {
+            "check": "present_bathroom_text_parse_failures",
+            "count": int(text_present_but_unparseable.sum()),
+        },
+        {
+            "check": "comparable_half_bath_labels",
+            "count": int(comparable_half_bath_rows.sum()),
+        },
+        {
+            "check": "half_bath_label_numeric_mismatches",
+            "count": int(half_bath_mismatches.sum()),
+        },
+        {
+            "check": "comparable_bathroom_values",
+            "count": int(comparable_values.sum()),
+        },
+        {
+            "check": "matching_bathroom_values",
+            "count": int((~conflicts).sum()),
+        },
+        {
+            "check": "conflicting_bathroom_values",
+            "count": int(conflicts.sum()),
+        },
+    ]
+
+    # Keep the original and parsed representations side by side so that
+    # every disagreement remains transparent and manually inspectable.
+    conflict_indices = numeric_difference[conflicts].index
+    discrepancies = data.loc[
+        conflict_indices,
+        ["id", "bathrooms", "bathrooms_text"],
+    ].copy()
+
+    discrepancies["parsed_bathrooms_text"] = (
+        parsed_text.loc[conflict_indices]
+    )
+
+    return pd.DataFrame(checks), discrepancies
 
 
 def build_review_missingness_checks(
@@ -366,6 +544,28 @@ def write_review_missingness_checks(
     return output_path
 
 
+def write_bathroom_checks(
+    checks: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write the summary of bathroom-field diagnostics."""
+    output_path = output_dir / "bathroom_checks.csv"
+    checks.to_csv(output_path, index=False)
+
+    return output_path
+
+
+def write_bathroom_discrepancies(
+    discrepancies: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write conflicting bathroom representations for inspection."""
+    output_path = output_dir / "bathroom_discrepancies.csv"
+    discrepancies.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def main() -> None:
     """Run the basic profiling workflow."""
     args = parse_arguments()
@@ -384,6 +584,12 @@ def main() -> None:
     # Review-score missingness is assessed separately because a missing
     # rating may be semantically expected for listings without reviews.
     review_checks = build_review_missingness_checks(data)
+
+    # Bathroom completeness and consistency require comparison of the
+    # numeric field with its textual counterpart.
+    bathroom_checks, bathroom_discrepancies = (
+        build_bathroom_checks(data)
+    )
 
     duplicate_rows = count_duplicate_rows(data)
     duplicate_ids = count_duplicate_listing_ids(data)
@@ -406,6 +612,17 @@ def main() -> None:
     review_checks_path = write_review_missingness_checks(
         review_checks,
         args.output_dir,
+    )
+
+    bathroom_checks_path = write_bathroom_checks(
+        bathroom_checks,
+        args.output_dir,
+    )
+    bathroom_discrepancies_path = (
+        write_bathroom_discrepancies(
+            bathroom_discrepancies,
+            args.output_dir,
+        )
     )
 
     print("Basic profiling complete.")
@@ -432,6 +649,14 @@ def main() -> None:
     print(
         "Review-missingness checks written to: "
         f"{review_checks_path.resolve()}"
+    )
+    print(
+        "Bathroom checks written to: "
+        f"{bathroom_checks_path.resolve()}"
+    )
+    print(
+        "Bathroom discrepancies written to: "
+        f"{bathroom_discrepancies_path.resolve()}"
     )
 
 

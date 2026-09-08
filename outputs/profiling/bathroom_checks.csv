@@ -1,0 +1,11 @@
+check,count
+missing_numeric_bathrooms,8847
+missing_bathrooms_text,63
+recoverable_missing_numeric_bathrooms,8792
+missing_numeric_and_text,55
+present_bathroom_text_parse_failures,0
+comparable_half_bath_labels,133
+half_bath_label_numeric_mismatches,0
+comparable_bathroom_values,48018
+matching_bathroom_values,48012
+conflicting_bathroom_values,6
