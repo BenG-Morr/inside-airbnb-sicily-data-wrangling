@@ -167,6 +167,32 @@ def parse_bathroom_count(value: object) -> float | None:
     return float(match.group(1))
 
 
+def parse_amenities_cell(
+    value: object,
+) -> tuple[str, list[object] | None]:
+    """Parse one amenities cell and classify its source structure.
+
+    The status is returned separately from the parsed value so that
+    genuinely missing data, malformed JSON and valid JSON with the wrong
+    structure are not collapsed into the same category.
+    """
+    if pd.isna(value):
+        return "missing", None
+
+    try:
+        parsed_value = json.loads(str(value))
+    except json.JSONDecodeError:
+        return "parse_error", None
+
+    # A successfully parsed JSON value is not necessarily a list. Since
+    # the intended structure is one list of amenities per listing, other
+    # JSON structures are recorded separately.
+    if not isinstance(parsed_value, list):
+        return "non_list", None
+
+    return "list", parsed_value
+
+
 def build_price_representation_checks(
     data: pd.DataFrame,
     price_numeric: pd.Series,
@@ -469,6 +495,119 @@ def build_host_consistency_checks(
     return pd.DataFrame(results)
 
 
+def build_amenities_checks(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Assess the structure of the listing amenities field.
+
+    Amenities are stored as multiple values within a single source cell.
+    Before considering a later listing-amenity table, this function checks
+    whether those values can be parsed consistently as JSON lists.
+    """
+    if "amenities" not in data.columns:
+        raise KeyError("Expected column 'amenities' was not found.")
+
+    parsed_cells = data["amenities"].map(parse_amenities_cell)
+
+    # Keep parsing status separate from the parsed list so that structural
+    # problems can be counted without altering the source field.
+    parse_status = parsed_cells.map(
+        lambda result: result[0]
+    )
+    amenity_lists = parsed_cells.map(
+        lambda result: result[1]
+    )
+
+    valid_list_mask = parse_status.eq("list")
+    valid_lists = amenity_lists[valid_list_mask]
+
+    # List lengths describe the number of amenity values represented in
+    # each source cell. They do not yet create or modify any observations.
+    amenities_per_listing = valid_lists.map(len)
+
+    # The later normalisation step assumes individual amenities are strings.
+    # Check that assumption explicitly rather than relying on the JSON
+    # parser alone.
+    non_string_items = valid_lists.map(
+        lambda values: sum(
+            not isinstance(item, str)
+            for item in values
+        )
+    )
+
+    # A repeated amenity within the same listing would create duplicate
+    # listing-amenity pairs after normalisation. Compare each list length
+    # with the number of distinct values before creating that table.
+    duplicate_items_per_listing = valid_lists.map(
+        lambda values: len(values) - len(set(values))
+    )
+    listings_with_duplicate_amenities = (
+            duplicate_items_per_listing > 0
+    )
+
+    checks = [
+        {
+            "check": "missing_amenities",
+            "value": int(
+                parse_status.eq("missing").sum()
+            ),
+        },
+        {
+            "check": "valid_json_lists",
+            "value": int(valid_list_mask.sum()),
+        },
+        {
+            "check": "json_parse_errors",
+            "value": int(
+                parse_status.eq("parse_error").sum()
+            ),
+        },
+        {
+            "check": "valid_json_non_lists",
+            "value": int(
+                parse_status.eq("non_list").sum()
+            ),
+        },
+        {
+            "check": "non_string_amenity_items",
+            "value": int(non_string_items.sum()),
+        },
+        {
+            "check": "listings_with_duplicate_amenities",
+            "value": int(
+                listings_with_duplicate_amenities.sum()
+            ),
+        },
+        {
+            "check": "duplicate_amenity_items",
+            "value": int(
+                duplicate_items_per_listing.sum()
+            ),
+        },
+        {
+            "check": "median_amenities_per_listing",
+            "value": float(amenities_per_listing.median()),
+        },
+        {
+            "check": "maximum_amenities_per_listing",
+            "value": int(amenities_per_listing.max()),
+        },
+    ]
+
+    checks_frame = pd.DataFrame(checks)
+
+    # Store whole-number results without a decimal suffix while preserving
+    # non-integer statistics, such as a possible median of 31.5.
+    checks_frame["value"] = checks_frame["value"].map(
+        lambda value: (
+            str(int(value))
+            if float(value).is_integer()
+            else str(value)
+        )
+    )
+
+    return checks_frame
+
 
 def build_review_missingness_checks(
         data: pd.DataFrame,
@@ -654,6 +793,17 @@ def write_host_consistency_checks(
     return output_path
 
 
+def write_amenities_checks(
+    checks: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write amenities-structure diagnostics to a CSV file."""
+    output_path = output_dir / "amenities_checks.csv"
+    checks.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def main() -> None:
     """Run the basic profiling workflow."""
     args = parse_arguments()
@@ -682,6 +832,10 @@ def main() -> None:
     # Repeated host attributes are checked before any later attempt to
     # normalise them into a separate host-level table.
     host_checks = build_host_consistency_checks(data)
+
+    # Amenities contain multiple values within each source cell. Their
+    # structure is validated before considering later normalisation.
+    amenities_checks = build_amenities_checks(data)
 
     duplicate_rows = count_duplicate_rows(data)
     duplicate_ids = count_duplicate_listing_ids(data)
@@ -722,6 +876,11 @@ def main() -> None:
         args.output_dir,
     )
 
+    amenities_checks_path = write_amenities_checks(
+        amenities_checks,
+        args.output_dir,
+    )
+
     print("Basic profiling complete.")
     print(f"Rows x columns: {len(data):,} x {len(data.columns):,}")
     print(f"Exact duplicate rows: {duplicate_rows:,}")
@@ -758,6 +917,10 @@ def main() -> None:
     print(
         "Host consistency checks written to: "
         f"{host_checks_path.resolve()}"
+    )
+    print(
+        "Amenities checks written to: "
+        f"{amenities_checks_path.resolve()}"
     )
 
 

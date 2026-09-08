@@ -1,0 +1,10 @@
+check,value
+missing_amenities,0
+valid_json_lists,56873
+json_parse_errors,0
+valid_json_non_lists,0
+non_string_amenity_items,0
+listings_with_duplicate_amenities,0
+duplicate_amenity_items,0
+median_amenities_per_listing,31
+maximum_amenities_per_listing,125
