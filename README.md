@@ -35,4 +35,4 @@ python src/01_profile.py \
   --output-dir outputs/profiling
 ```
 
-The script generates a column-level profile, a data-quality inventory, and targeted diagnostics used to support the subsequent wrangling decisions.
+The script currently generates a basic column-level profile containing data types, completeness statistics and uniqueness information.
