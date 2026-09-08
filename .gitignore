@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Raw and derived datasets (do not commit large data files)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# LaTeX build artefacts
+report/*.aux
+report/*.bbl
+report/*.bcf
+report/*.blg
+report/*.log
+report/*.out
+report/*.run.xml
+report/*.toc
+report/*.lof
+report/*.lot
+report/*.synctex.gz
+report/*.pdf
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+report/
