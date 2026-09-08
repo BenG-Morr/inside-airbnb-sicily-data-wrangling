@@ -1,0 +1,6 @@
+check,count
+missing_review_ratings,16501
+listings_with_zero_reviews,16501
+missing_rating_with_zero_reviews,16501
+missing_rating_with_reviews,0
+rating_present_with_zero_reviews,0

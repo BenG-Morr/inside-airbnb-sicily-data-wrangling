@@ -215,8 +215,83 @@ def build_price_representation_checks(
     return pd.DataFrame(checks)
 
 
+def build_review_missingness_checks(
+        data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Assess whether missing review ratings are structurally meaningful.
+
+    Review ratings are only expected once a listing has received at least
+    one review. The checks therefore compare missing rating values with
+    `number_of_reviews` instead of treating all missing ratings as data
+    quality defects.
+    """
+    required_columns = {
+        "review_scores_rating",
+        "number_of_reviews",
+    }
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(f"Missing required columns: {missing_names}")
+
+    rating_missing = data["review_scores_rating"].isna()
+    zero_reviews = data["number_of_reviews"].eq(0)
+
+    # Missing ratings may be semantically meaningful when a listing has
+    # never received a review. Such values should not automatically be
+    # treated as errors or candidates for imputation.
+    missing_rating_with_zero_reviews = (
+            rating_missing & zero_reviews
+    )
+
+    # A missing rating despite existing reviews would represent a
+    # different form of missingness and would require investigation.
+    missing_rating_with_reviews = (
+            rating_missing & ~zero_reviews
+    )
+
+    # A populated rating for a listing with zero reviews would indicate
+    # an internal inconsistency between the two review-related fields.
+    rating_present_with_zero_reviews = (
+            data["review_scores_rating"].notna()
+            & zero_reviews
+    )
+
+    checks = [
+        {
+            "check": "missing_review_ratings",
+            "count": int(rating_missing.sum()),
+        },
+        {
+            "check": "listings_with_zero_reviews",
+            "count": int(zero_reviews.sum()),
+        },
+        {
+            "check": "missing_rating_with_zero_reviews",
+            "count": int(
+                missing_rating_with_zero_reviews.sum()
+            ),
+        },
+        {
+            "check": "missing_rating_with_reviews",
+            "count": int(
+                missing_rating_with_reviews.sum()
+            ),
+        },
+        {
+            "check": "rating_present_with_zero_reviews",
+            "count": int(
+                rating_present_with_zero_reviews.sum()
+            ),
+        },
+    ]
+
+    return pd.DataFrame(checks)
+
+
 def build_price_missingness_by_source(
-    data: pd.DataFrame,
+        data: pd.DataFrame,
 ) -> pd.DataFrame:
     """Summarise missing price values for each listing source."""
     required_columns = {"price", "source"}
@@ -280,6 +355,17 @@ def write_column_profile(
     return output_path
 
 
+def write_review_missingness_checks(
+    checks: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write review-score missingness checks to a CSV file."""
+    output_path = output_dir / "review_missingness_checks.csv"
+    checks.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def main() -> None:
     """Run the basic profiling workflow."""
     args = parse_arguments()
@@ -294,6 +380,10 @@ def main() -> None:
     )
 
     price_missingness = build_price_missingness_by_source(data)
+
+    # Review-score missingness is assessed separately because a missing
+    # rating may be semantically expected for listings without reviews.
+    review_checks = build_review_missingness_checks(data)
 
     duplicate_rows = count_duplicate_rows(data)
     duplicate_ids = count_duplicate_listing_ids(data)
@@ -310,6 +400,11 @@ def main() -> None:
 
     price_checks_path = write_price_representation_checks(
         price_checks,
+        args.output_dir,
+    )
+
+    review_checks_path = write_review_missingness_checks(
+        review_checks,
         args.output_dir,
     )
 
@@ -333,6 +428,10 @@ def main() -> None:
     print(
         "Price-representation checks written to: "
         f"{price_checks_path.resolve()}"
+    )
+    print(
+        "Review-missingness checks written to: "
+        f"{review_checks_path.resolve()}"
     )
 
 
