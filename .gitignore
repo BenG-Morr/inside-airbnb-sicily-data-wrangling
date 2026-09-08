@@ -4,28 +4,15 @@ __pycache__/
 .venv/
 venv/
 
-# Raw and derived datasets (do not commit large data files)
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
+# Raw and derived datasets
+data/raw/
+data/processed/
 
-# LaTeX build artefacts
-report/*.aux
-report/*.bbl
-report/*.bcf
-report/*.blg
-report/*.log
-report/*.out
-report/*.run.xml
-report/*.toc
-report/*.lof
-report/*.lot
-report/*.synctex.gz
-report/*.pdf
+# Local report source
+report/
 
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
-report/
+
