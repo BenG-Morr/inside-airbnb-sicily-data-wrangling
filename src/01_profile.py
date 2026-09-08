@@ -22,6 +22,28 @@ HALF_BATH_LABELS = {
     "shared half-bath",
 }
 
+
+# These attributes describe the host rather than an individual listing.
+# Because they are repeated across listing rows, their consistency must
+# be checked before they can safely be moved into a separate hosts table.
+HOST_FIELDS_FOR_CONSISTENCY = [
+    "host_profile_id",
+    "host_profile_url",
+    "host_name",
+    "host_location",
+    "host_about",
+    "host_is_superhost",
+    "host_picture_url",
+    "host_listings_count",
+    "host_has_profile_pic",
+    "host_identity_verified",
+    "hosts_time_as_user_years",
+    "hosts_time_as_user_months",
+    "hosts_time_as_host_years",
+    "hosts_time_as_host_months",
+]
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
@@ -393,6 +415,61 @@ def build_bathroom_checks(
     return pd.DataFrame(checks), discrepancies
 
 
+def build_host_consistency_checks(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Check whether host attributes are consistent within each host ID.
+
+    Host-level attributes are repeated across listing rows. For a later
+    normalisation into a separate hosts table, each host should have at
+    most one distinct non-missing value per selected attribute.
+    """
+    if "host_id" not in data.columns:
+        raise KeyError("Expected column 'host_id' was not found.")
+
+    results = []
+
+    for field in HOST_FIELDS_FOR_CONSISTENCY:
+        if field not in data.columns:
+            continue
+
+        # Missing values are deliberately excluded from the distinct-value
+        # count. A host having one observed value and additional missing
+        # values is incomplete, but it is not internally contradictory.
+        distinct_values_per_host = (
+            data.groupby("host_id")[field]
+            .nunique(dropna=True)
+        )
+
+        # Recording coverage as well as conflicts prevents a field with
+        # little observed data from appearing misleadingly consistent.
+        hosts_with_non_missing_value = (
+            distinct_values_per_host > 0
+        ).sum()
+
+        hosts_with_conflicts = (
+            distinct_values_per_host > 1
+        ).sum()
+
+        results.append(
+            {
+                "field": field,
+                "hosts_with_non_missing_value": int(
+                    hosts_with_non_missing_value
+                ),
+                "hosts_with_multiple_non_missing_values": int(
+                    hosts_with_conflicts
+                ),
+                "max_distinct_values_per_host": int(
+                    distinct_values_per_host.max()
+                ),
+            }
+        )
+
+    return pd.DataFrame(results)
+
+
+
 def build_review_missingness_checks(
         data: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -566,6 +643,17 @@ def write_bathroom_discrepancies(
     return output_path
 
 
+def write_host_consistency_checks(
+    checks: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write host-field consistency diagnostics to a CSV file."""
+    output_path = output_dir / "host_field_consistency.csv"
+    checks.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def main() -> None:
     """Run the basic profiling workflow."""
     args = parse_arguments()
@@ -590,6 +678,10 @@ def main() -> None:
     bathroom_checks, bathroom_discrepancies = (
         build_bathroom_checks(data)
     )
+
+    # Repeated host attributes are checked before any later attempt to
+    # normalise them into a separate host-level table.
+    host_checks = build_host_consistency_checks(data)
 
     duplicate_rows = count_duplicate_rows(data)
     duplicate_ids = count_duplicate_listing_ids(data)
@@ -625,6 +717,11 @@ def main() -> None:
         )
     )
 
+    host_checks_path = write_host_consistency_checks(
+        host_checks,
+        args.output_dir,
+    )
+
     print("Basic profiling complete.")
     print(f"Rows x columns: {len(data):,} x {len(data.columns):,}")
     print(f"Exact duplicate rows: {duplicate_rows:,}")
@@ -657,6 +754,10 @@ def main() -> None:
     print(
         "Bathroom discrepancies written to: "
         f"{bathroom_discrepancies_path.resolve()}"
+    )
+    print(
+        "Host consistency checks written to: "
+        f"{host_checks_path.resolve()}"
     )
 
 

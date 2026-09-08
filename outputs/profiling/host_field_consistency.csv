@@ -1,0 +1,15 @@
+field,hosts_with_non_missing_value,hosts_with_multiple_non_missing_values,max_distinct_values_per_host
+host_profile_id,29047,0,1
+host_profile_url,29047,0,1
+host_name,29047,0,1
+host_location,17449,0,1
+host_about,8721,0,1
+host_is_superhost,29047,0,1
+host_picture_url,29047,0,1
+host_listings_count,29047,0,1
+host_has_profile_pic,29047,0,1
+host_identity_verified,29047,0,1
+hosts_time_as_user_years,29047,0,1
+hosts_time_as_user_months,29047,0,1
+hosts_time_as_host_years,29046,0,1
+hosts_time_as_host_months,29046,0,1
