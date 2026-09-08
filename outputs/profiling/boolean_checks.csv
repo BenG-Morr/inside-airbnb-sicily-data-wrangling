@@ -1,0 +1,6 @@
+field,true_values,false_values,missing_values,unexpected_values
+host_is_superhost,14198,42675,0,0
+host_has_profile_pic,50995,5878,0,0
+host_identity_verified,56192,681,0,0
+has_availability,53609,3153,111,0
+instant_bookable,0,0,56873,0

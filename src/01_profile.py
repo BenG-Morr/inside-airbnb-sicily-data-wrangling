@@ -44,6 +44,31 @@ HOST_FIELDS_FOR_CONSISTENCY = [
 ]
 
 
+# These fields conceptually represent calendar dates. Profiling them
+# explicitly allows later conversion to datetime values only after their
+# source representation has been shown to be parseable.
+DATE_FIELDS_FOR_PROFILING = [
+    "last_scraped",
+    "calendar_last_scraped",
+    "price_quote_checkin_date",
+    "price_quote_checkout_date",
+    "first_review",
+    "last_review",
+]
+
+
+# These fields conceptually represent binary states but are stored in the
+# source data using Airbnb's textual "t" and "f" notation. Missing values
+# are retained as a separate state during profiling.
+BOOLEAN_FIELDS_FOR_PROFILING = [
+    "host_is_superhost",
+    "host_has_profile_pic",
+    "host_identity_verified",
+    "has_availability",
+    "instant_bookable",
+]
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
@@ -609,6 +634,100 @@ def build_amenities_checks(
     return checks_frame
 
 
+def build_date_checks(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Assess completeness and parseability of selected date fields.
+
+    Date-like source columns are currently stored as text. A later type
+    conversion is justified only if observed values can be parsed without
+    silently turning malformed strings into missing values.
+    """
+    results = []
+
+    for field in DATE_FIELDS_FOR_PROFILING:
+        if field not in data.columns:
+            continue
+
+        source_values = data[field]
+        parsed_values = pd.to_datetime(
+            source_values,
+            errors="coerce",
+        )
+
+        # A parse failure is counted only when the source value exists but
+        # conversion produces NaT. Existing missing values are therefore
+        # kept separate from malformed date representations.
+        parse_failures = (
+            source_values.notna()
+            & parsed_values.isna()
+        )
+
+        results.append(
+            {
+                "field": field,
+                "non_missing_values": int(
+                    source_values.notna().sum()
+                ),
+                "missing_values": int(
+                    source_values.isna().sum()
+                ),
+                "parse_failures": int(
+                    parse_failures.sum()
+                ),
+            }
+        )
+
+    return pd.DataFrame(results)
+
+
+def build_boolean_checks(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Assess representation of selected boolean source fields.
+
+    Airbnb represents binary states using the strings "t" and "f".
+    Unexpected non-missing values are counted separately so that later
+    conversion to nullable booleans does not silently reinterpret them.
+    """
+    results = []
+    expected_values = {"t", "f"}
+
+    for field in BOOLEAN_FIELDS_FOR_PROFILING:
+        if field not in data.columns:
+            continue
+
+        source_values = data[field]
+        non_missing_values = source_values.dropna()
+
+        # Only the documented source representations "t" and "f" are
+        # treated as valid boolean values. Anything else remains visible
+        # as an unexpected representation rather than being coerced.
+        unexpected_values = (
+            ~non_missing_values.isin(expected_values)
+        )
+
+        results.append(
+            {
+                "field": field,
+                "true_values": int(
+                    source_values.eq("t").sum()
+                ),
+                "false_values": int(
+                    source_values.eq("f").sum()
+                ),
+                "missing_values": int(
+                    source_values.isna().sum()
+                ),
+                "unexpected_values": int(
+                    unexpected_values.sum()
+                ),
+            }
+        )
+
+    return pd.DataFrame(results)
+
+
 def build_review_missingness_checks(
         data: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -804,6 +923,28 @@ def write_amenities_checks(
     return output_path
 
 
+def write_date_checks(
+    checks: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write date-field representation diagnostics to a CSV file."""
+    output_path = output_dir / "date_checks.csv"
+    checks.to_csv(output_path, index=False)
+
+    return output_path
+
+
+def write_boolean_checks(
+    checks: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write boolean-field representation diagnostics to a CSV file."""
+    output_path = output_dir / "boolean_checks.csv"
+    checks.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def main() -> None:
     """Run the basic profiling workflow."""
     args = parse_arguments()
@@ -836,6 +977,11 @@ def main() -> None:
     # Amenities contain multiple values within each source cell. Their
     # structure is validated before considering later normalisation.
     amenities_checks = build_amenities_checks(data)
+
+    # Date and boolean fields are profiled before later type conversion so
+    # that malformed or unexpected source values are not silently coerced.
+    date_checks = build_date_checks(data)
+    boolean_checks = build_boolean_checks(data)
 
     duplicate_rows = count_duplicate_rows(data)
     duplicate_ids = count_duplicate_listing_ids(data)
@@ -881,6 +1027,15 @@ def main() -> None:
         args.output_dir,
     )
 
+    date_checks_path = write_date_checks(
+        date_checks,
+        args.output_dir,
+    )
+    boolean_checks_path = write_boolean_checks(
+        boolean_checks,
+        args.output_dir,
+    )
+
     print("Basic profiling complete.")
     print(f"Rows x columns: {len(data):,} x {len(data.columns):,}")
     print(f"Exact duplicate rows: {duplicate_rows:,}")
@@ -921,6 +1076,14 @@ def main() -> None:
     print(
         "Amenities checks written to: "
         f"{amenities_checks_path.resolve()}"
+    )
+    print(
+        "Date checks written to: "
+        f"{date_checks_path.resolve()}"
+    )
+    print(
+        "Boolean checks written to: "
+        f"{boolean_checks_path.resolve()}"
     )
 
 
