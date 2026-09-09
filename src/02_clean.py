@@ -6,6 +6,7 @@ the profiling findings before the refined dataset is written to disk.
 """
 
 import argparse
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -33,6 +34,16 @@ BOOLEAN_FIELDS_TO_CONVERT = [
     "host_identity_verified",
     "has_availability",
 ]
+
+
+# Airbnb uses these textual labels for half bathrooms without including
+# an explicit numeric count. Profiling confirmed that all comparable
+# source rows with these labels have a numeric bathroom value of 0.5.
+HALF_BATH_LABELS = {
+    "half-bath",
+    "private half-bath",
+    "shared half-bath",
+}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -175,6 +186,101 @@ def convert_boolean_fields(data: pd.DataFrame) -> pd.DataFrame:
     return cleaned
 
 
+def parse_bathroom_count(value: object) -> float | None:
+    """Extract a numeric bathroom count from `bathrooms_text`.
+
+    Standard Airbnb descriptions begin with a numeric count, for example
+    `1 bath`, `2 shared baths` or `1.5 baths`. Textual half-bath labels
+    require explicit handling because they contain no numeric prefix.
+    """
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip().lower()
+
+    if text in HALF_BATH_LABELS:
+        return 0.5
+
+    match = re.match(r"^(\d+(?:\.\d+)?)\b", text)
+
+    if match is None:
+        return None
+
+    return float(match.group(1))
+
+
+def derive_bathroom_fields(data: pd.DataFrame) -> pd.DataFrame:
+    """Derive a consolidated bathroom value and diagnostic flags.
+
+    Existing numeric bathroom values take precedence. Parsed textual
+    values are used only where the numeric source field is missing.
+    Conflicting populated representations are flagged rather than
+    automatically resolved.
+    """
+    required_columns = {
+        "bathrooms",
+        "bathrooms_text",
+    }
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(
+            f"Missing required bathroom columns: {missing_names}"
+        )
+
+    cleaned = data.copy()
+    parsed_text = cleaned["bathrooms_text"].map(
+        parse_bathroom_count
+    )
+
+    numeric_missing = cleaned["bathrooms"].isna()
+    parsed_text_present = parsed_text.notna()
+
+    # Only missing numeric values are filled from the textual field.
+    # Existing numeric values are never overwritten.
+    derived_from_text = (
+        numeric_missing & parsed_text_present
+    )
+
+    cleaned["bathrooms_clean"] = cleaned["bathrooms"]
+    cleaned.loc[
+        derived_from_text,
+        "bathrooms_clean",
+    ] = parsed_text.loc[derived_from_text]
+
+    cleaned["bathrooms_derived_from_text"] = (
+        derived_from_text.astype("boolean")
+    )
+
+    # Conflicts are assessed only where both representations provide
+    # numeric information. A small tolerance avoids treating irrelevant
+    # floating-point representation differences as genuine conflicts.
+    comparable_values = (
+        cleaned["bathrooms"].notna()
+        & parsed_text.notna()
+    )
+    bathroom_tolerance = 0.001
+
+    bathroom_difference = (
+        cleaned.loc[comparable_values, "bathrooms"]
+        - parsed_text.loc[comparable_values]
+    ).abs()
+
+    conflict_flag = pd.Series(
+        False,
+        index=cleaned.index,
+        dtype="boolean",
+    )
+    conflict_flag.loc[
+        bathroom_difference.index
+    ] = bathroom_difference.gt(bathroom_tolerance)
+
+    cleaned["bathroom_conflict_flag"] = conflict_flag
+
+    return cleaned
+
+
 def validate_price_eur(
     original: pd.DataFrame,
     cleaned: pd.DataFrame,
@@ -277,13 +383,60 @@ def validate_boolean_fields(
         actual_missing = int(cleaned[field].isna().sum())
 
         if (
-                expected_true != actual_true
-                or expected_false != actual_false
-                or expected_missing != actual_missing
+            expected_true != actual_true
+            or expected_false != actual_false
+            or expected_missing != actual_missing
         ):
             raise ValueError(
                 f"Boolean validation failed for field: {field}"
             )
+
+
+def validate_bathroom_fields(
+    original: pd.DataFrame,
+    cleaned: pd.DataFrame,
+) -> None:
+    """Validate bathroom derivation against the profiling results."""
+    original_present = original["bathrooms"].notna()
+
+    # Existing numeric bathroom values must remain unchanged in the
+    # consolidated field, including rows with conflicting text.
+    changed_existing_values = (
+        cleaned.loc[original_present, "bathrooms_clean"]
+        .ne(original.loc[original_present, "bathrooms"])
+    )
+
+    if changed_existing_values.any():
+        raise ValueError(
+            "Bathroom derivation changed existing numeric values."
+        )
+
+    derived_count = int(
+        cleaned["bathrooms_derived_from_text"].sum()
+    )
+    remaining_missing = int(
+        cleaned["bathrooms_clean"].isna().sum()
+    )
+    conflict_count = int(
+        cleaned["bathroom_conflict_flag"].sum()
+    )
+
+    # These expected counts were established independently during the
+    # profiling stage for this dataset snapshot.
+    if derived_count != 8792:
+        raise ValueError(
+            f"Expected 8792 derived bathrooms, found {derived_count}."
+        )
+
+    if remaining_missing != 55:
+        raise ValueError(
+            f"Expected 55 missing bathrooms, found {remaining_missing}."
+        )
+
+    if conflict_count != 6:
+        raise ValueError(
+            f"Expected 6 bathroom conflicts, found {conflict_count}."
+        )
 
 
 def validate_date_fields(
@@ -360,6 +513,7 @@ def main() -> None:
     cleaned_data = derive_price_eur(raw_data)
     cleaned_data = convert_date_fields(cleaned_data)
     cleaned_data = convert_boolean_fields(cleaned_data)
+    cleaned_data = derive_bathroom_fields(cleaned_data)
 
     # Validate every transformation before processed data are written.
     validate_price_eur(
@@ -371,6 +525,10 @@ def main() -> None:
         cleaned_data,
     )
     validate_boolean_fields(
+        raw_data,
+        cleaned_data,
+    )
+    validate_bathroom_fields(
         raw_data,
         cleaned_data,
     )
@@ -392,6 +550,15 @@ def main() -> None:
     print(
         f"Boolean fields converted: {len(BOOLEAN_FIELDS_TO_CONVERT)}"
     )
+    print(
+        "Bathroom values derived from text: "
+        f"{cleaned_data['bathrooms_derived_from_text'].sum():,}")
+    print(
+        "Remaining missing bathroom values: "
+        f"{cleaned_data['bathrooms_clean'].isna().sum():,}")
+    print(
+        "Bathroom conflicts flagged: "
+        f"{cleaned_data['bathroom_conflict_flag'].sum():,}")
     print(f"Output written to: {args.output.resolve()}")
 
 
