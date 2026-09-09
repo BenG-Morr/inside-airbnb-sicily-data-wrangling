@@ -1,13 +1,15 @@
 # Inside Airbnb Sicily data wrangling
 
-Reproducible Python pipeline for profiling, cleaning and tidying the Inside Airbnb Sicily Detailed Listings dataset, with documented data-quality decisions and validation.
+Reproducible Python pipeline for profiling, cleaning and tidying the
+Inside Airbnb Sicily Detailed Listings dataset, with documented
+data-quality decisions and validation.
 
 ## Repository structure
 
 ```text
 .
 ├── data/
-│   ├── raw/                 # source file kept local; not committed
+│   ├── raw/                 # source data kept local; not committed
 │   └── processed/           # generated refined datasets; not committed
 ├── outputs/
 │   └── profiling/           # generated profiling diagnostics
@@ -19,10 +21,13 @@ Reproducible Python pipeline for profiling, cleaning and tidying the Inside Airb
 
 ## Setup
 
+Create and activate a virtual environment, then install the project
+dependencies:
+
 ```bash
-python src/01_profile.py \
-  --input data/raw/listings.csv.gz \
-  --output-dir outputs/profiling
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
 ## Run profiling
@@ -35,4 +40,16 @@ python src/01_profile.py \
   --output-dir outputs/profiling
 ```
 
-The script currently generates a basic column-level profile containing data types, completeness statistics and uniqueness information.
+The profiling script generates:
+
+- a column-level profile of data types, completeness and uniqueness;
+- price representation, missingness and distribution diagnostics;
+- review-score missingness checks;
+- bathroom completeness and consistency checks;
+- host-field consistency checks;
+- amenities structure checks;
+- date and boolean representation checks;
+- records for manual inspection of the highest observed prices; and
+- a consolidated data-quality inventory with proposed wrangling treatments.
+
+The raw dataset is not modified by the profiling process.

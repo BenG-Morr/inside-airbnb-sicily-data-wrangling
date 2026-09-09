@@ -1,8 +1,13 @@
-"""Basic profiling of the Inside Airbnb Sicily listings dataset.
+"""Profile data quality in the Inside Airbnb Sicily listings dataset.
 
-This script loads the raw listings dataset without modifying it and creates
-a column-level profile containing data types, missing-value counts and
-uniqueness information. It also reports basic row-level uniqueness checks.
+The script reads the raw listings dataset without modifying it and produces
+a column-level profile together with targeted diagnostics for price,
+missingness, bathrooms, host attributes, amenities, dates, boolean fields,
+uniqueness and extreme price values.
+
+The individual checks are consolidated into a data-quality inventory that
+documents the evidence and proposed treatment for the subsequent wrangling
+stage.
 """
 
 import argparse
@@ -69,7 +74,9 @@ BOOLEAN_FIELDS_FOR_PROFILING = [
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
-        description="Create a basic profile of the Airbnb listings dataset."
+        description=(
+            "Profile data quality in the Airbnb listings dataset."
+        )
     )
     parser.add_argument(
         "--input",
@@ -1512,7 +1519,7 @@ def write_data_quality_inventory(
 
 
 def main() -> None:
-    """Run the basic profiling workflow."""
+    """Run the complete data-quality profiling workflow."""
     args = parse_arguments()
 
     data = load_dataset(args.input)
@@ -1645,7 +1652,7 @@ def main() -> None:
         args.output_dir,
     )
 
-    print("Basic profiling complete.")
+    print("Data-quality profiling complete.")
     print(f"Rows x columns: {len(data):,} x {len(data.columns):,}")
     print(f"Exact duplicate rows: {duplicate_rows:,}")
 
