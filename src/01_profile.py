@@ -218,6 +218,49 @@ def parse_amenities_cell(
     return "list", parsed_value
 
 
+def get_check_value(
+    checks: pd.DataFrame,
+    check_name: str,
+) -> int:
+    """Return an integer value from a two-column diagnostic table.
+
+    Several profiling outputs use the common `check` and `count`
+    structure. Centralising the lookup avoids repeatedly embedding
+    DataFrame filtering logic in the inventory construction.
+    """
+    matching_rows = checks.loc[
+        checks["check"].eq(check_name),
+        "count",
+    ]
+
+    if len(matching_rows) != 1:
+        raise ValueError(
+            f"Expected exactly one result for check: {check_name}"
+        )
+
+    return int(matching_rows.iloc[0])
+
+
+def get_named_value(
+    checks: pd.DataFrame,
+    name_column: str,
+    name: str,
+    value_column: str,
+) -> float:
+    """Return one value from a diagnostic table identified by name."""
+    matching_rows = checks.loc[
+        checks[name_column].eq(name),
+        value_column,
+    ]
+
+    if len(matching_rows) != 1:
+        raise ValueError(
+            f"Expected exactly one result for: {name}"
+        )
+
+    return float(matching_rows.iloc[0])
+
+
 def build_price_representation_checks(
     data: pd.DataFrame,
     price_numeric: pd.Series,
@@ -938,6 +981,393 @@ def build_price_missingness_by_source(
     return summary
 
 
+def build_data_quality_inventory(
+    data: pd.DataFrame,
+    column_profile: pd.DataFrame,
+    price_checks: pd.DataFrame,
+    price_missingness: pd.DataFrame,
+    review_checks: pd.DataFrame,
+    bathroom_checks: pd.DataFrame,
+    amenities_checks: pd.DataFrame,
+    host_checks: pd.DataFrame,
+    boolean_checks: pd.DataFrame,
+    date_checks: pd.DataFrame,
+    price_distribution: pd.DataFrame,
+    duplicate_rows: int,
+    duplicate_ids: int | None,
+) -> pd.DataFrame:
+    """Summarise profiling findings and proposed wrangling decisions.
+
+    The inventory translates previously calculated diagnostics into a
+    compact methodological record. It does not perform additional
+    cleaning or modify the raw dataset.
+    """
+    row_count = len(data)
+
+    entirely_missing_columns = column_profile.loc[
+        column_profile["non_null_count"].eq(0),
+        "column",
+    ].tolist()
+
+    non_missing_prices = get_check_value(
+        price_checks,
+        "non_missing_raw_price",
+    )
+    price_parse_failures = get_check_value(
+        price_checks,
+        "price_parse_failures",
+    )
+    paired_prices = get_check_value(
+        price_checks,
+        "paired_numeric_prices",
+    )
+    price_mismatches = get_check_value(
+        price_checks,
+        "numeric_price_mismatches",
+    )
+    quote_currency_eur = get_check_value(
+        price_checks,
+        "quote_currency_eur",
+    )
+    quote_raw_missing = get_check_value(
+        price_checks,
+        "quote_raw_missing",
+    )
+    quote_currency_missing = get_check_value(
+        price_checks,
+        "quote_currency_missing_in_present_quote",
+    )
+    quote_currency_parse_errors = get_check_value(
+        price_checks,
+        "quote_currency_parse_errors",
+    )
+
+    missing_review_ratings = get_check_value(
+        review_checks,
+        "missing_review_ratings",
+    )
+    missing_rating_with_reviews = get_check_value(
+        review_checks,
+        "missing_rating_with_reviews",
+    )
+    missing_rating_with_zero_reviews = get_check_value(
+        review_checks,
+        "missing_rating_with_zero_reviews",
+    )
+    rating_present_with_zero_reviews = get_check_value(
+        review_checks,
+        "rating_present_with_zero_reviews",
+    )
+
+    missing_numeric_bathrooms = get_check_value(
+        bathroom_checks,
+        "missing_numeric_bathrooms",
+    )
+    recoverable_bathrooms = get_check_value(
+        bathroom_checks,
+        "recoverable_missing_numeric_bathrooms",
+    )
+    bathrooms_missing_both = get_check_value(
+        bathroom_checks,
+        "missing_numeric_and_text",
+    )
+    bathroom_parse_failures = get_check_value(
+        bathroom_checks,
+        "present_bathroom_text_parse_failures",
+    )
+    bathroom_conflicts = get_check_value(
+        bathroom_checks,
+        "conflicting_bathroom_values",
+    )
+
+    valid_amenity_lists = int(
+        get_named_value(
+            amenities_checks,
+            "check",
+            "valid_json_lists",
+            "value",
+        )
+    )
+    duplicate_amenities = int(
+        get_named_value(
+            amenities_checks,
+            "check",
+            "duplicate_amenity_items",
+            "value",
+        )
+    )
+
+    host_conflicts = int(
+        host_checks[
+            "hosts_with_multiple_non_missing_values"
+        ].sum()
+    )
+
+    unexpected_boolean_values = int(
+        boolean_checks["unexpected_values"].sum()
+    )
+
+    # Missing boolean values are reported separately from unexpected
+    # representations. A missing value is not the same problem as a
+    # non-missing value that cannot be interpreted as "t" or "f".
+    has_availability_missing = int(
+        boolean_checks.loc[
+            boolean_checks["field"].eq("has_availability"),
+            "missing_values",
+        ].iloc[0]
+    )
+    instant_bookable_missing = int(
+        boolean_checks.loc[
+            boolean_checks["field"].eq("instant_bookable"),
+            "missing_values",
+        ].iloc[0]
+    )
+
+    date_parse_failures = int(
+        date_checks["parse_failures"].sum()
+    )
+
+    median_price = get_named_value(
+        price_distribution,
+        "statistic",
+        "median",
+        "value",
+    )
+    mean_price = get_named_value(
+        price_distribution,
+        "statistic",
+        "mean",
+        "value",
+    )
+    p99_price = get_named_value(
+        price_distribution,
+        "statistic",
+        "p99",
+        "value",
+    )
+    p99_9_price = get_named_value(
+        price_distribution,
+        "statistic",
+        "p99_9",
+        "value",
+    )
+    maximum_price = get_named_value(
+        price_distribution,
+        "statistic",
+        "maximum",
+        "value",
+    )
+
+    # Price missingness is reported by source because the large difference
+    # between source groups makes global complete-case deletion potentially
+    # selective rather than neutral.
+    price_missingness_text = "; ".join(
+        (
+            f"{row.source}: "
+            f"{int(row.missing_price_count)}/"
+            f"{int(row.row_count)} "
+            f"({row.missing_price_percent:.3f}%)"
+        )
+        for row in price_missingness.itertuples()
+    )
+
+    inventory = [
+        {
+            "issue_id": "DQ01",
+            "quality_aspect": "Completeness / analytical scope",
+            "finding": (
+                f"{len(entirely_missing_columns)} columns are entirely "
+                "missing in this snapshot."
+            ),
+            "evidence": ", ".join(entirely_missing_columns),
+            "proposed_treatment": (
+                "Exclude these fields from refined analytical tables; "
+                "leave the raw source unchanged."
+            ),
+        },
+        {
+            "issue_id": "DQ02",
+            "quality_aspect": "Representational consistency",
+            "finding": (
+                "Raw price strings can be parsed consistently and agree "
+                "with the available numeric quote representation."
+            ),
+            "evidence": (
+                f"{non_missing_prices} observed raw prices; "
+                f"{price_parse_failures} parse failures; "
+                f"{paired_prices} paired numeric values with "
+                f"{price_mismatches} mismatches; "
+                f"{quote_currency_eur} quote records specify EUR; "
+                f"{quote_raw_missing} quote records are missing; "
+                f"{quote_currency_missing} present quotes omit currency; "
+                f"{quote_currency_parse_errors} quote parse errors."
+            ),
+            "proposed_treatment": (
+                "Derive an explicit numeric EUR price field while "
+                "preserving the raw representation."
+            ),
+        },
+        {
+            "issue_id": "DQ03",
+            "quality_aspect": "Completeness / selection risk",
+            "finding": (
+                "Price missingness differs substantially by listing "
+                "source."
+            ),
+            "evidence": price_missingness_text,
+            "proposed_treatment": (
+                "Retain missing prices and exclude them only from "
+                "analyses that require price."
+            ),
+        },
+        {
+            "issue_id": "DQ04",
+            "quality_aspect": "Semantic missingness",
+            "finding": (
+                "Missing review ratings correspond to listings without "
+                "reviews rather than unexplained missing values."
+            ),
+            "evidence": (
+                f"{missing_review_ratings} ratings are missing; "
+                f"all {missing_rating_with_zero_reviews} occur on "
+                "listings with zero reviews; "
+                f"{missing_rating_with_reviews} are missing despite "
+                "existing reviews; "
+                f"{rating_present_with_zero_reviews} populated ratings "
+                "occur on zero-review listings."
+            ),
+            "proposed_treatment": (
+                "Preserve missing review ratings and do not impute them."
+            ),
+        },
+        {
+            "issue_id": "DQ05",
+            "quality_aspect": "Completeness / internal consistency",
+            "finding": (
+                "The textual bathroom field can recover most missing "
+                "numeric values, while a small number of populated "
+                "representations conflict."
+            ),
+            "evidence": (
+                f"{missing_numeric_bathrooms} numeric values are missing; "
+                f"{recoverable_bathrooms} are recoverable from text; "
+                f"{bathrooms_missing_both} rows lack both representations; "
+                f"{bathroom_parse_failures} present text values fail "
+                f"parsing; {bathroom_conflicts} conflicts detected."
+            ),
+            "proposed_treatment": (
+                "Fill only missing numeric bathroom values from parsed "
+                "text and flag existing conflicts without overwriting."
+            ),
+        },
+        {
+            "issue_id": "DQ06",
+            "quality_aspect": "Structural tidiness",
+            "finding": (
+                "Amenities are consistently stored as JSON lists within "
+                "individual listing cells."
+            ),
+            "evidence": (
+                f"{valid_amenity_lists}/{row_count} cells are valid "
+                f"lists; {duplicate_amenities} duplicate amenity items."
+            ),
+            "proposed_treatment": (
+                "Normalise amenities into a separate listing-amenity "
+                "table."
+            ),
+        },
+        {
+            "issue_id": "DQ07",
+            "quality_aspect": "Structural tidiness / redundancy",
+            "finding": (
+                "Host-level attributes are repeated across listing rows "
+                "without conflicting observed values."
+            ),
+            "evidence": (
+                f"{data['host_id'].nunique()} unique hosts; "
+                f"{host_conflicts} host-field conflicts across the "
+                "selected attributes."
+            ),
+            "proposed_treatment": (
+                "Normalise selected host attributes into one row per "
+                "host_id."
+            ),
+        },
+        {
+            "issue_id": "DQ08",
+            "quality_aspect": "Representational consistency",
+            "finding": (
+                "Observed boolean fields use only the expected textual "
+                "'t' and 'f' representations."
+            ),
+            "evidence": (
+                f"{unexpected_boolean_values} unexpected observed "
+                f"boolean values; has_availability has "
+                f"{has_availability_missing} missing values; "
+                f"instant_bookable has {instant_bookable_missing} "
+                "missing values."
+            ),
+            "proposed_treatment": (
+                "Map observed 't'/'f' values to nullable booleans and "
+                "exclude the entirely empty field from analytical scope."
+            ),
+        },
+        {
+            "issue_id": "DQ09",
+            "quality_aspect": "Representational consistency",
+            "finding": (
+                "Observed values in the selected date fields are "
+                "consistently parseable."
+            ),
+            "evidence": (
+                f"{date_parse_failures} parse failures across the "
+                "selected date fields."
+            ),
+            "proposed_treatment": (
+                "Convert observed date strings to explicit datetime "
+                "values while preserving missingness."
+            ),
+        },
+        {
+            "issue_id": "DQ10",
+            "quality_aspect": "Plausibility / statistical influence",
+            "finding": (
+                "The observed price distribution is strongly right-skewed "
+                "and contains very large values."
+            ),
+            "evidence": (
+                f"Median: {median_price:.2f}; "
+                f"mean: {mean_price:.2f}; "
+                f"p99: {p99_price:.2f}; "
+                f"p99.9: {p99_9_price:.2f}; "
+                f"maximum: {maximum_price:.2f}."
+            ),
+            "proposed_treatment": (
+                "Retain extreme values initially; use robust summaries "
+                "and sensitivity analysis before considering any "
+                "documented exclusion rule."
+            ),
+        },
+        {
+            "issue_id": "DQ11",
+            "quality_aspect": "Uniqueness",
+            "finding": (
+                "No exact duplicate rows or duplicated listing IDs were "
+                "detected."
+            ),
+            "evidence": (
+                f"{duplicate_rows} exact duplicate rows; "
+                f"{duplicate_ids} duplicate listing IDs."
+            ),
+            "proposed_treatment": (
+                "Do not apply an unnecessary deduplication step."
+            ),
+        },
+    ]
+
+    return pd.DataFrame(inventory)
+
+
 def write_price_missingness(
     summary: pd.DataFrame,
     output_dir: Path,
@@ -1072,6 +1502,17 @@ def write_highest_price_records(
     return output_path
 
 
+def write_data_quality_inventory(
+    inventory: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write the consolidated data-quality inventory to CSV."""
+    output_path = output_dir / "data_quality_inventory.csv"
+    inventory.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def main() -> None:
     """Run the basic profiling workflow."""
     args = parse_arguments()
@@ -1123,6 +1564,24 @@ def main() -> None:
 
     duplicate_rows = count_duplicate_rows(data)
     duplicate_ids = count_duplicate_listing_ids(data)
+
+    # The formal inventory consolidates the diagnostics already calculated
+    # above; it does not perform another round of transformations.
+    data_quality_inventory = build_data_quality_inventory(
+        data=data,
+        column_profile=column_profile,
+        price_checks=price_checks,
+        price_missingness=price_missingness,
+        review_checks=review_checks,
+        bathroom_checks=bathroom_checks,
+        amenities_checks=amenities_checks,
+        host_checks=host_checks,
+        boolean_checks=boolean_checks,
+        date_checks=date_checks,
+        price_distribution=price_distribution,
+        duplicate_rows=duplicate_rows,
+        duplicate_ids=duplicate_ids,
+    )
 
     output_path = write_column_profile(
         column_profile,
@@ -1183,6 +1642,11 @@ def main() -> None:
         args.output_dir,
     )
 
+    inventory_path = write_data_quality_inventory(
+        data_quality_inventory,
+        args.output_dir,
+    )
+
     print("Basic profiling complete.")
     print(f"Rows x columns: {len(data):,} x {len(data.columns):,}")
     print(f"Exact duplicate rows: {duplicate_rows:,}")
@@ -1239,6 +1703,11 @@ def main() -> None:
     print(
         "Boolean checks written to: "
         f"{boolean_checks_path.resolve()}"
+    )
+
+    print(
+        "Data-quality inventory written to: "
+        f"{inventory_path.resolve()}"
     )
 
 
