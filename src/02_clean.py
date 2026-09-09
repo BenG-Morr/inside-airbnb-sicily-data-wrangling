@@ -46,6 +46,27 @@ HALF_BATH_LABELS = {
 }
 
 
+# These attributes describe the host rather than an individual listing.
+# Profiling showed that each host has at most one distinct non-missing
+# value for every selected field, supporting a separate host-level table.
+HOST_FIELDS_TO_NORMALISE = [
+    "host_profile_id",
+    "host_profile_url",
+    "host_name",
+    "host_location",
+    "host_about",
+    "host_is_superhost",
+    "host_picture_url",
+    "host_listings_count",
+    "host_has_profile_pic",
+    "host_identity_verified",
+    "hosts_time_as_user_years",
+    "hosts_time_as_user_months",
+    "hosts_time_as_host_years",
+    "hosts_time_as_host_months",
+]
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
@@ -62,6 +83,12 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Path for the cleaned listings CSV file.",
+    )
+    parser.add_argument(
+        "--hosts-output",
+        type=Path,
+        required=True,
+        help="Path for the normalised hosts CSV file.",
     )
 
     return parser.parse_args()
@@ -281,6 +308,78 @@ def derive_bathroom_fields(data: pd.DataFrame) -> pd.DataFrame:
     return cleaned
 
 
+def normalise_host_data(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Separate host-level attributes from listing-level observations.
+
+    Each listing retains `host_id` as a foreign key. The selected host
+    attributes are moved into a table containing one row per host.
+
+    Before collapsing repeated host data, the function verifies that no
+    host has more than one distinct non-missing value for any selected
+    host field.
+    """
+    required_columns = {
+        "host_id",
+        *HOST_FIELDS_TO_NORMALISE,
+    }
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(
+            f"Missing required host columns: {missing_names}"
+        )
+
+    if data["host_id"].isna().any():
+        raise ValueError(
+            "Host normalisation requires non-missing host IDs."
+        )
+
+    # Collapsing repeated host rows is safe only if the observed values
+    # for each host-level attribute are internally consistent.
+    conflicting_fields = []
+
+    for field in HOST_FIELDS_TO_NORMALISE:
+        distinct_values = (
+            data.groupby("host_id")[field]
+            .nunique(dropna=True)
+        )
+
+        if distinct_values.gt(1).any():
+            conflicting_fields.append(field)
+
+    if conflicting_fields:
+        conflicting_names = ", ".join(conflicting_fields)
+        raise ValueError(
+            "Conflicting host-level values found in: "
+            f"{conflicting_names}"
+        )
+
+    host_columns = [
+        "host_id",
+        *HOST_FIELDS_TO_NORMALISE,
+    ]
+
+    # `groupby().first()` selects the first non-missing value for each
+    # field. Because consistency was checked above, this cannot combine
+    # contradictory observed values for the same host.
+    hosts = (
+        data[host_columns]
+        .groupby("host_id", as_index=False)
+        .first()
+    )
+
+    # The listing table keeps host_id but no longer repeats the selected
+    # host attributes for every listing.
+    listings = data.drop(
+        columns=HOST_FIELDS_TO_NORMALISE
+    ).copy()
+
+    return listings, hosts
+
+
 def validate_price_eur(
     original: pd.DataFrame,
     cleaned: pd.DataFrame,
@@ -439,6 +538,50 @@ def validate_bathroom_fields(
         )
 
 
+def validate_host_normalisation(
+    original: pd.DataFrame,
+    listings: pd.DataFrame,
+    hosts: pd.DataFrame,
+) -> None:
+    """Validate host-table uniqueness and referential integrity."""
+    expected_hosts = int(original["host_id"].nunique())
+
+    if len(hosts) != expected_hosts:
+        raise ValueError(
+            f"Expected {expected_hosts} hosts, found {len(hosts)}."
+        )
+
+    if hosts["host_id"].duplicated().any():
+        raise ValueError(
+            "The normalised hosts table contains duplicate host IDs."
+        )
+
+    # Every listing host_id must resolve to exactly one host-table row.
+    missing_host_references = (
+        ~listings["host_id"].isin(hosts["host_id"])
+    )
+
+    if missing_host_references.any():
+        missing_count = int(missing_host_references.sum())
+        raise ValueError(
+            f"{missing_count} listing host IDs have no host record."
+        )
+
+    # The normalised fields should no longer be repeated in listings.
+    remaining_host_fields = set(
+        HOST_FIELDS_TO_NORMALISE
+    ).intersection(listings.columns)
+
+    if remaining_host_fields:
+        remaining_names = ", ".join(
+            sorted(remaining_host_fields)
+        )
+        raise ValueError(
+            "Host fields remain in the listings table: "
+            f"{remaining_names}"
+        )
+
+
 def validate_date_fields(
     original: pd.DataFrame,
     cleaned: pd.DataFrame,
@@ -489,11 +632,11 @@ def validate_boolean_fields(
             )
 
 
-def write_cleaned_dataset(
+def write_dataset(
     data: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Write the cleaned listings dataset to the requested local path."""
+    """Write a processed dataset to the requested local path."""
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -515,7 +658,8 @@ def main() -> None:
     cleaned_data = convert_boolean_fields(cleaned_data)
     cleaned_data = derive_bathroom_fields(cleaned_data)
 
-    # Validate every transformation before processed data are written.
+    # Validate field-level transformations before moving host attributes
+    # out of the listing-level table.
     validate_price_eur(
         raw_data,
         cleaned_data,
@@ -533,12 +677,25 @@ def main() -> None:
         cleaned_data,
     )
 
-    write_cleaned_dataset(
+    cleaned_data, hosts_data = normalise_host_data(
+        cleaned_data
+    )
+    validate_host_normalisation(
+        raw_data,
+        cleaned_data,
+        hosts_data,
+    )
+
+    write_dataset(
         cleaned_data,
         args.output,
     )
+    write_dataset(
+        hosts_data,
+        args.hosts_output,
+    )
 
-    print("Representation harmonisation complete.")
+    print("Cleaning and structural tidying complete.")
     print(f"Rows preserved: {len(cleaned_data):,}")
     print(
         "Non-missing derived prices: "
@@ -559,7 +716,15 @@ def main() -> None:
     print(
         "Bathroom conflicts flagged: "
         f"{cleaned_data['bathroom_conflict_flag'].sum():,}")
-    print(f"Output written to: {args.output.resolve()}")
+    print(
+        f"Normalised hosts: {len(hosts_data):,}")
+    print(
+        "Listings columns after host normalisation: "
+        f"{len(cleaned_data.columns)}")
+    print(
+        f"Hosts columns: {len(hosts_data.columns)}")
+    print(f"Listings written to: {args.output.resolve()}")
+    print(f"Hosts written to: {args.hosts_output.resolve()}")
 
 
 if __name__ == "__main__":
