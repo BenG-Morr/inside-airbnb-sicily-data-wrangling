@@ -803,6 +803,111 @@ def build_review_missingness_checks(
     return pd.DataFrame(checks)
 
 
+def build_price_distribution_checks(
+    price_numeric: pd.Series,
+) -> pd.DataFrame:
+    """Summarise the distribution of successfully parsed prices.
+
+    Extreme values are described rather than automatically removed.
+    A numerically unusual price may represent a valid listing, so the
+    profiling stage should make such values visible without treating
+    them as errors.
+    """
+    observed_prices = price_numeric.dropna()
+
+    # Several upper quantiles are reported because the price distribution
+    # is strongly right-skewed. This provides more context than the mean
+    # and maximum alone and supports later sensitivity analysis.
+    statistics = [
+        {
+            "statistic": "count",
+            "value": float(observed_prices.count()),
+        },
+        {
+            "statistic": "minimum",
+            "value": float(observed_prices.min()),
+        },
+        {
+            "statistic": "median",
+            "value": float(observed_prices.median()),
+        },
+        {
+            "statistic": "mean",
+            "value": float(observed_prices.mean()),
+        },
+        {
+            "statistic": "p95",
+            "value": float(observed_prices.quantile(0.95)),
+        },
+        {
+            "statistic": "p99",
+            "value": float(observed_prices.quantile(0.99)),
+        },
+        {
+            "statistic": "p99_5",
+            "value": float(observed_prices.quantile(0.995)),
+        },
+        {
+            "statistic": "p99_9",
+            "value": float(observed_prices.quantile(0.999)),
+        },
+        {
+            "statistic": "maximum",
+            "value": float(observed_prices.max()),
+        },
+    ]
+
+    distribution = pd.DataFrame(statistics)
+
+    # Two decimal places match the precision of the source price values
+    # and avoid exposing irrelevant binary floating-point artefacts in
+    # the human-readable profiling output.
+    distribution["value"] = distribution["value"].round(2)
+
+    return distribution
+
+
+def build_highest_price_records(
+    data: pd.DataFrame,
+    price_numeric: pd.Series,
+    number_of_records: int = 10,
+) -> pd.DataFrame:
+    """Return the highest observed prices for manual inspection.
+
+    The records are not labelled as errors or removed. The purpose is to
+    retain enough listing context to assess whether extreme values warrant
+    further investigation during the cleaning and evaluation stages.
+
+    Ten records are shown by default as a compact inspection sample rather
+    than as a statistical threshold for defining outliers.
+    """
+    inspection_fields = [
+        "id",
+        "source",
+        "neighbourhood_cleansed",
+        "room_type",
+        "accommodates",
+        "price",
+    ]
+    available_fields = [
+        field
+        for field in inspection_fields
+        if field in data.columns
+    ]
+
+    # Work on a copy so that the profiling step does not add columns to
+    # the original DataFrame loaded from the raw source file.
+    inspection_data = data[available_fields].copy()
+    inspection_data["price_numeric"] = price_numeric
+
+    return (
+        inspection_data
+        .dropna(subset=["price_numeric"])
+        .nlargest(number_of_records, "price_numeric")
+        .reset_index(drop=True)
+    )
+
+
 def build_price_missingness_by_source(
         data: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -945,6 +1050,28 @@ def write_boolean_checks(
     return output_path
 
 
+def write_price_distribution_checks(
+    checks: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write descriptive price-distribution statistics to a CSV file."""
+    output_path = output_dir / "price_distribution_checks.csv"
+    checks.to_csv(output_path, index=False)
+
+    return output_path
+
+
+def write_highest_price_records(
+    records: pd.DataFrame,
+    output_dir: Path,
+) -> Path:
+    """Write the highest observed price records for inspection."""
+    output_path = output_dir / "highest_price_records.csv"
+    records.to_csv(output_path, index=False)
+
+    return output_path
+
+
 def main() -> None:
     """Run the basic profiling workflow."""
     args = parse_arguments()
@@ -959,6 +1086,17 @@ def main() -> None:
     )
 
     price_missingness = build_price_missingness_by_source(data)
+
+    # The price distribution is profiled separately from representation
+    # and missingness because extreme values require contextual assessment
+    # rather than automatic deletion.
+    price_distribution = build_price_distribution_checks(
+        price_numeric
+    )
+    highest_price_records = build_highest_price_records(
+        data,
+        price_numeric,
+    )
 
     # Review-score missingness is assessed separately because a missing
     # rating may be semantically expected for listings without reviews.
@@ -998,6 +1136,15 @@ def main() -> None:
 
     price_checks_path = write_price_representation_checks(
         price_checks,
+        args.output_dir,
+    )
+
+    price_distribution_path = write_price_distribution_checks(
+        price_distribution,
+        args.output_dir,
+    )
+    highest_price_records_path = write_highest_price_records(
+        highest_price_records,
         args.output_dir,
     )
 
@@ -1056,6 +1203,14 @@ def main() -> None:
     print(
         "Price-representation checks written to: "
         f"{price_checks_path.resolve()}"
+    )
+    print(
+        "Price-distribution checks written to: "
+        f"{price_distribution_path.resolve()}"
+    )
+    print(
+        "Highest-price records written to: "
+        f"{highest_price_records_path.resolve()}"
     )
     print(
         "Review-missingness checks written to: "

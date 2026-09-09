@@ -1,0 +1,11 @@
+id,source,neighbourhood_cleansed,room_type,accommodates,price,price_numeric
+52250690,city scrape,Modica,Entire home/apt,4,"$88,494.55",88494.55
+823851890735056903,city scrape,San Vito Lo Capo,Private room,1,"$61,160.55",61160.55
+20017976,city scrape,Ravanusa,Private room,4,"$17,243.16",17243.16
+930598030535216768,city scrape,Capo d'Orlando,Entire home/apt,5,"$16,560.67",16560.67
+1309968614600037180,city scrape,Trapani,Entire home/apt,16,"$13,200.00",13200.0
+1134674862349280891,city scrape,Giardini-Naxos,Entire home/apt,4,"$11,447.00",11447.0
+993523565001412616,city scrape,Aci Castello,Private room,14,"$10,294.06",10294.06
+1332491092213117150,city scrape,Trapani,Entire home/apt,2,"$9,128.51",9128.51
+1238514724451165332,city scrape,Balestrate,Entire home/apt,8,"$7,000.00",7000.0
+1627746062513554369,city scrape,Terrasini,Entire home/apt,6,"$6,628.11",6628.11
