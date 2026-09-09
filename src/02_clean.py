@@ -6,6 +6,7 @@ the profiling findings before the refined dataset is written to disk.
 """
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -89,6 +90,12 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Path for the normalised hosts CSV file.",
+    )
+    parser.add_argument(
+        "--amenities-output",
+        type=Path,
+        required=True,
+        help="Path for the normalised listing-amenities CSV file.",
     )
 
     return parser.parse_args()
@@ -380,6 +387,85 @@ def normalise_host_data(
     return listings, hosts
 
 
+def normalise_amenities(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Separate nested amenities into listing-amenity observations.
+
+    The source stores all amenities for one listing as a JSON list inside
+    a single cell. Each amenity is moved to its own row while the listing
+    table retains the listing ID needed to link both tables.
+
+    Amenity strings are preserved exactly as supplied by the source. This
+    step changes only the structure and does not standardise amenity names.
+    """
+    required_columns = {
+        "id",
+        "amenities",
+    }
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(
+            f"Missing required amenities columns: {missing_names}"
+        )
+
+    amenity_records = []
+
+    for listing_id, raw_amenities in data[
+        ["id", "amenities"]
+    ].itertuples(index=False, name=None):
+        if pd.isna(raw_amenities):
+            raise ValueError(
+                f"Missing amenities for listing {listing_id}."
+            )
+
+        try:
+            parsed_amenities = json.loads(
+                str(raw_amenities)
+            )
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"Invalid amenities JSON for listing {listing_id}."
+            ) from error
+
+        # Profiling indicated that amenities are consistently represented
+        # as lists. The cleaning pipeline nevertheless validates this
+        # assumption so that future malformed input is not silently used.
+        if not isinstance(parsed_amenities, list):
+            raise TypeError(
+                f"Amenities are not a list for listing {listing_id}."
+            )
+
+        for amenity in parsed_amenities:
+            if not isinstance(amenity, str):
+                raise TypeError(
+                    "Non-string amenity found for listing "
+                    f"{listing_id}."
+                )
+
+            amenity_records.append(
+                {
+                    "listing_id": listing_id,
+                    "amenity": amenity,
+                }
+            )
+
+    listing_amenities = pd.DataFrame(
+        amenity_records,
+        columns=["listing_id", "amenity"],
+    )
+
+    # The nested source field is no longer needed in the refined listing
+    # table because its observations now reside in listing_amenities.
+    listings = data.drop(
+        columns=["amenities"]
+    ).copy()
+
+    return listings, listing_amenities
+
+
 def validate_price_eur(
     original: pd.DataFrame,
     cleaned: pd.DataFrame,
@@ -582,6 +668,92 @@ def validate_host_normalisation(
         )
 
 
+def validate_amenities_normalisation(
+    original: pd.DataFrame,
+    listings: pd.DataFrame,
+    listing_amenities: pd.DataFrame,
+) -> None:
+    """Validate the listing-amenity table and its relationship to listings."""
+    if "amenities" in listings.columns:
+        raise ValueError(
+            "The nested amenities field remains in the listings table."
+        )
+
+    # Count the source amenity observations independently. The number of
+    # normalised rows must equal the total number of list elements in the
+    # original source field.
+    expected_amenity_rows = 0
+
+    for raw_amenities in original["amenities"]:
+        parsed_amenities = json.loads(
+            str(raw_amenities)
+        )
+        expected_amenity_rows += len(
+            parsed_amenities
+        )
+
+    if len(listing_amenities) != expected_amenity_rows:
+        raise ValueError(
+            "Amenity normalisation changed the number of amenity "
+            "observations."
+        )
+
+    # Profiling found no repeated amenity within the same listing. The
+    # normalised table should therefore contain no duplicate
+    # listing-amenity pairs.
+    duplicate_pairs = listing_amenities.duplicated(
+        subset=["listing_id", "amenity"]
+    )
+
+    if duplicate_pairs.any():
+        duplicate_count = int(duplicate_pairs.sum())
+        raise ValueError(
+            f"Found {duplicate_count} duplicate listing-amenity pairs."
+        )
+
+    # Every foreign key in the amenities table must reference an existing
+    # listing in the refined listings table.
+    missing_listing_references = (
+        ~listing_amenities["listing_id"].isin(
+            listings["id"]
+        )
+    )
+
+    if missing_listing_references.any():
+        missing_count = int(
+            missing_listing_references.sum()
+        )
+        raise ValueError(
+            f"{missing_count} amenities reference missing listings."
+        )
+
+        # Listings with an empty source amenities list legitimately produce no
+        # rows in the normalised relationship table. Verify that every listing
+        # omitted from listing_amenities is explained by such an empty list.
+        source_amenity_counts = original["amenities"].map(
+            lambda value: len(json.loads(str(value)))
+        )
+        zero_amenity_listing_ids = set(
+            original.loc[
+                source_amenity_counts.eq(0),
+                "id",
+            ]
+        )
+
+        represented_listing_ids = set(
+            listing_amenities["listing_id"].unique()
+        )
+        omitted_listing_ids = (
+                set(listings["id"]) - represented_listing_ids
+        )
+
+        if omitted_listing_ids != zero_amenity_listing_ids:
+            raise ValueError(
+                "Listings omitted from the amenity table do not match "
+                "the listings with empty source amenity lists."
+            )
+
+
 def validate_date_fields(
     original: pd.DataFrame,
     cleaned: pd.DataFrame,
@@ -686,6 +858,18 @@ def main() -> None:
         hosts_data,
     )
 
+    # Amenities represent a many-to-many-style relationship between
+    # listings and amenity labels and are therefore moved out of the
+    # listing-level table.
+    cleaned_data, listing_amenities_data = normalise_amenities(
+        cleaned_data
+    )
+    validate_amenities_normalisation(
+        raw_data,
+        cleaned_data,
+        listing_amenities_data,
+    )
+
     write_dataset(
         cleaned_data,
         args.output,
@@ -693,6 +877,10 @@ def main() -> None:
     write_dataset(
         hosts_data,
         args.hosts_output,
+    )
+    write_dataset(
+        listing_amenities_data,
+        args.amenities_output,
     )
 
     print("Cleaning and structural tidying complete.")
@@ -719,12 +907,21 @@ def main() -> None:
     print(
         f"Normalised hosts: {len(hosts_data):,}")
     print(
-        "Listings columns after host normalisation: "
+        "Listings columns after structural normalisation: "
         f"{len(cleaned_data.columns)}")
     print(
         f"Hosts columns: {len(hosts_data.columns)}")
+    print(
+        "Normalised listing-amenity rows: "
+        f"{len(listing_amenities_data):,}")
+    print(
+        "Listing-amenity columns: "
+        f"{len(listing_amenities_data.columns)}")
     print(f"Listings written to: {args.output.resolve()}")
     print(f"Hosts written to: {args.hosts_output.resolve()}")
+    print(
+        "Listing amenities written to: "
+        f"{args.amenities_output.resolve()}")
 
 
 if __name__ == "__main__":
