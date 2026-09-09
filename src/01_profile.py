@@ -1373,147 +1373,20 @@ def build_data_quality_inventory(
     return pd.DataFrame(inventory)
 
 
-def write_price_missingness(
-    summary: pd.DataFrame,
+def write_csv(
+    frame: pd.DataFrame,
     output_dir: Path,
+    filename: str,
 ) -> Path:
-    """Write the price-missingness summary to a CSV file."""
-    output_path = output_dir / "missing_price_by_source.csv"
-    summary.to_csv(output_path, index=False)
+    """Write a profiling DataFrame to CSV and return its output path.
 
-    return output_path
-
-
-def write_price_representation_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write price-representation checks to a CSV file."""
-    output_path = output_dir / "price_representation_checks.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_column_profile(
-    profile: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write the column-level profile to a CSV file."""
+    The output directory is created here so that each write operation is
+    independent of the order in which profiling outputs are generated.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "column_profile.csv"
+    output_path = output_dir / filename
 
-    profile.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_review_missingness_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write review-score missingness checks to a CSV file."""
-    output_path = output_dir / "review_missingness_checks.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_bathroom_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write the summary of bathroom-field diagnostics."""
-    output_path = output_dir / "bathroom_checks.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_bathroom_discrepancies(
-    discrepancies: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write conflicting bathroom representations for inspection."""
-    output_path = output_dir / "bathroom_discrepancies.csv"
-    discrepancies.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_host_consistency_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write host-field consistency diagnostics to a CSV file."""
-    output_path = output_dir / "host_field_consistency.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_amenities_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write amenities-structure diagnostics to a CSV file."""
-    output_path = output_dir / "amenities_checks.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_date_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write date-field representation diagnostics to a CSV file."""
-    output_path = output_dir / "date_checks.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_boolean_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write boolean-field representation diagnostics to a CSV file."""
-    output_path = output_dir / "boolean_checks.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_price_distribution_checks(
-    checks: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write descriptive price-distribution statistics to a CSV file."""
-    output_path = output_dir / "price_distribution_checks.csv"
-    checks.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_highest_price_records(
-    records: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write the highest observed price records for inspection."""
-    output_path = output_dir / "highest_price_records.csv"
-    records.to_csv(output_path, index=False)
-
-    return output_path
-
-
-def write_data_quality_inventory(
-    inventory: pd.DataFrame,
-    output_dir: Path,
-) -> Path:
-    """Write the consolidated data-quality inventory to CSV."""
-    output_path = output_dir / "data_quality_inventory.csv"
-    inventory.to_csv(output_path, index=False)
+    frame.to_csv(output_path, index=False)
 
     return output_path
 
@@ -1588,68 +1461,82 @@ def main() -> None:
         duplicate_ids=duplicate_ids,
     )
 
-    output_path = write_column_profile(
+    column_profile_path = write_csv(
         column_profile,
         args.output_dir,
+        "column_profile.csv",
     )
 
-    price_output_path = write_price_missingness(
+    price_output_path = write_csv(
         price_missingness,
         args.output_dir,
+        "missing_price_by_source.csv",
     )
 
-    price_checks_path = write_price_representation_checks(
+    price_checks_path = write_csv(
         price_checks,
         args.output_dir,
+        "price_representation_checks.csv",
     )
 
-    price_distribution_path = write_price_distribution_checks(
+    price_distribution_path = write_csv(
         price_distribution,
         args.output_dir,
+        "price_distribution_checks.csv",
     )
-    highest_price_records_path = write_highest_price_records(
+
+    highest_price_records_path = write_csv(
         highest_price_records,
         args.output_dir,
+        "highest_price_records.csv",
     )
 
-    review_checks_path = write_review_missingness_checks(
+    review_checks_path = write_csv(
         review_checks,
         args.output_dir,
+        "review_missingness_checks.csv",
     )
 
-    bathroom_checks_path = write_bathroom_checks(
+    bathroom_checks_path = write_csv(
         bathroom_checks,
         args.output_dir,
-    )
-    bathroom_discrepancies_path = (
-        write_bathroom_discrepancies(
-            bathroom_discrepancies,
-            args.output_dir,
-        )
+        "bathroom_checks.csv",
     )
 
-    host_checks_path = write_host_consistency_checks(
+    bathroom_discrepancies_path = write_csv(
+        bathroom_discrepancies,
+        args.output_dir,
+        "bathroom_discrepancies.csv",
+    )
+
+    host_checks_path = write_csv(
         host_checks,
         args.output_dir,
+        "host_field_consistency.csv",
     )
 
-    amenities_checks_path = write_amenities_checks(
+    amenities_checks_path = write_csv(
         amenities_checks,
         args.output_dir,
+        "amenities_checks.csv",
     )
 
-    date_checks_path = write_date_checks(
+    date_checks_path = write_csv(
         date_checks,
         args.output_dir,
-    )
-    boolean_checks_path = write_boolean_checks(
-        boolean_checks,
-        args.output_dir,
+        "date_checks.csv",
     )
 
-    inventory_path = write_data_quality_inventory(
+    boolean_checks_path = write_csv(
+        boolean_checks,
+        args.output_dir,
+        "boolean_checks.csv",
+    )
+
+    inventory_path = write_csv(
         data_quality_inventory,
         args.output_dir,
+        "data_quality_inventory.csv",
     )
 
     print("Data-quality profiling complete.")
@@ -1659,7 +1546,10 @@ def main() -> None:
     if duplicate_ids is not None:
         print(f"Duplicate listing IDs: {duplicate_ids:,}")
 
-    print(f"Column profile written to: {output_path.resolve()}")
+    print(
+        "Column profile written to: "
+        f"{column_profile_path.resolve()}"
+    )
 
     print(
         f"Parsed non-missing prices: "
