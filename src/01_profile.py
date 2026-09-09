@@ -22,7 +22,6 @@ HALF_BATH_LABELS = {
     "shared half-bath",
 }
 
-
 # These attributes describe the host rather than an individual listing.
 # Because they are repeated across listing rows, their consistency must
 # be checked before they can safely be moved into a separate hosts table.
@@ -43,7 +42,6 @@ HOST_FIELDS_FOR_CONSISTENCY = [
     "hosts_time_as_host_months",
 ]
 
-
 # These fields conceptually represent calendar dates. Profiling them
 # explicitly allows later conversion to datetime values only after their
 # source representation has been shown to be parseable.
@@ -55,7 +53,6 @@ DATE_FIELDS_FOR_PROFILING = [
     "first_review",
     "last_review",
 ]
-
 
 # These fields conceptually represent binary states but are stored in the
 # source data using Airbnb's textual "t" and "f" notation. Missing values
@@ -300,8 +297,8 @@ def build_price_representation_checks(
     # conditions.
     quote_raw_missing = data["price_quote_raw"].isna()
     currency_missing_in_quote = (
-            data["price_quote_raw"].notna()
-            & quote_currency.isna()
+        data["price_quote_raw"].notna()
+        & quote_currency.isna()
     )
 
     # Compare numeric values only where both representations are available.
@@ -339,9 +336,10 @@ def build_price_representation_checks(
             "check": "numeric_price_mismatches",
             "count": int(
                 (
-                        numeric_difference
-                        > price_mismatch_tolerance
-                ).sum()),
+                    numeric_difference
+                    > price_mismatch_tolerance
+                ).sum()
+            ),
         },
         {
             "check": "quote_currency_eur",
@@ -359,8 +357,8 @@ def build_price_representation_checks(
             "check": "quote_currency_parse_errors",
             "count": int(
                 (
-                        quote_currency
-                        == "__PARSE_ERROR__"
+                    quote_currency
+                    == "__PARSE_ERROR__"
                 ).sum()
             ),
         },
@@ -402,11 +400,11 @@ def build_bathroom_checks(
     # whether unrecoverable numeric values result from missing source
     # information or from limitations in the parsing logic.
     text_present_but_unparseable = (
-            data["bathrooms_text"].notna()
-            & parsed_text.isna()
+        data["bathrooms_text"].notna()
+        & parsed_text.isna()
     )
     numeric_and_text_missing = (
-            numeric_missing & text_missing
+        numeric_missing & text_missing
     )
 
     # A missing numeric value is considered recoverable only when the
@@ -434,7 +432,7 @@ def build_bathroom_checks(
         HALF_BATH_LABELS
     )
     comparable_half_bath_rows = (
-            half_bath_rows & data["bathrooms"].notna()
+        half_bath_rows & data["bathrooms"].notna()
     )
     half_bath_mismatches = (
         data.loc[comparable_half_bath_rows, "bathrooms"]
@@ -610,7 +608,7 @@ def build_amenities_checks(
         lambda values: len(values) - len(set(values))
     )
     listings_with_duplicate_amenities = (
-            duplicate_items_per_listing > 0
+        duplicate_items_per_listing > 0
     )
 
     checks = [
@@ -772,7 +770,7 @@ def build_boolean_checks(
 
 
 def build_review_missingness_checks(
-        data: pd.DataFrame,
+    data: pd.DataFrame,
 ) -> pd.DataFrame:
     """Assess whether missing review ratings are structurally meaningful.
 
@@ -798,20 +796,20 @@ def build_review_missingness_checks(
     # never received a review. Such values should not automatically be
     # treated as errors or candidates for imputation.
     missing_rating_with_zero_reviews = (
-            rating_missing & zero_reviews
+        rating_missing & zero_reviews
     )
 
     # A missing rating despite existing reviews would represent a
     # different form of missingness and would require investigation.
     missing_rating_with_reviews = (
-            rating_missing & ~zero_reviews
+        rating_missing & ~zero_reviews
     )
 
     # A populated rating for a listing with zero reviews would indicate
     # an internal inconsistency between the two review-related fields.
     rating_present_with_zero_reviews = (
-            data["review_scores_rating"].notna()
-            & zero_reviews
+        data["review_scores_rating"].notna()
+        & zero_reviews
     )
 
     checks = [
@@ -952,7 +950,7 @@ def build_highest_price_records(
 
 
 def build_price_missingness_by_source(
-        data: pd.DataFrame,
+    data: pd.DataFrame,
 ) -> pd.DataFrame:
     """Summarise missing price values for each listing source."""
     required_columns = {"price", "source"}
