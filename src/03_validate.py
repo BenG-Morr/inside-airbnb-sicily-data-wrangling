@@ -55,6 +55,7 @@ EMPTY_FIELDS_REMOVED = [
 HOST_FIELDS_NORMALISED = [
     "host_profile_id",
     "host_profile_url",
+    "host_url",
     "host_name",
     "host_location",
     "host_about",
@@ -67,6 +68,10 @@ HOST_FIELDS_NORMALISED = [
     "hosts_time_as_user_months",
     "hosts_time_as_host_years",
     "hosts_time_as_host_months",
+    "calculated_host_listings_count",
+    "calculated_host_listings_count_entire_homes",
+    "calculated_host_listings_count_private_rooms",
+    "calculated_host_listings_count_shared_rooms",
 ]
 
 
