@@ -36,6 +36,22 @@ HOST_BOOLEAN_FIELDS = [
     "host_identity_verified",
 ]
 
+EMPTY_FIELDS_REMOVED = [
+    "neighborhood_overview",
+    "host_since",
+    "host_response_time",
+    "host_response_rate",
+    "host_acceptance_rate",
+    "host_thumbnail_url",
+    "host_neighbourhood",
+    "host_total_listings_count",
+    "host_verifications",
+    "neighbourhood",
+    "neighbourhood_group_cleansed",
+    "calendar_updated",
+    "instant_bookable",
+]
+
 HOST_FIELDS_NORMALISED = [
     "host_profile_id",
     "host_profile_url",
@@ -610,6 +626,55 @@ def validate_boolean_fields(
             )
 
 
+def validate_removed_empty_fields(
+    raw: pd.DataFrame,
+    listings: pd.DataFrame,
+) -> None:
+    """Validate exclusion of fully empty source fields."""
+    missing_raw_fields = set(
+        EMPTY_FIELDS_REMOVED
+    ).difference(raw.columns)
+
+    if missing_raw_fields:
+        missing_names = ", ".join(
+            sorted(missing_raw_fields)
+        )
+        raise KeyError(
+            "Expected raw fields are missing: "
+            f"{missing_names}"
+        )
+
+    # Exclusion is justified only because every configured field is fully
+    # missing in this specific dataset snapshot.
+    non_empty_fields = [
+        field
+        for field in EMPTY_FIELDS_REMOVED
+        if raw[field].notna().any()
+    ]
+
+    if non_empty_fields:
+        non_empty_names = ", ".join(
+            sorted(non_empty_fields)
+        )
+        raise ValueError(
+            "Fields excluded as empty contain observed values: "
+            f"{non_empty_names}"
+        )
+
+    retained_fields = set(
+        EMPTY_FIELDS_REMOVED
+    ).intersection(listings.columns)
+
+    if retained_fields:
+        retained_names = ", ".join(
+            sorted(retained_fields)
+        )
+        raise ValueError(
+            "Fully empty fields remain in the refined listings table: "
+            f"{retained_names}"
+        )
+
+
 def main() -> None:
     """Run the basic processed-data validation checks."""
     args = parse_arguments()
@@ -666,6 +731,10 @@ def main() -> None:
         listings,
         hosts,
     )
+    validate_removed_empty_fields(
+        raw,
+        listings,
+    )
 
     print("Processed-data validation passed.")
     print(f"Listings: {len(listings):,} rows")
@@ -684,6 +753,9 @@ def main() -> None:
     print(
         "Boolean fields validated: "
         f"{len(LISTING_BOOLEAN_FIELDS) + len(HOST_BOOLEAN_FIELDS)}"
+    )
+    print(
+        f"Fully empty fields excluded: {len(EMPTY_FIELDS_REMOVED)}"
     )
 
 
