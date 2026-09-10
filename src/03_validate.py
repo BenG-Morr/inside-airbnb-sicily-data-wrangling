@@ -17,6 +17,15 @@ import pandas as pd
 EXPECTED_LISTING_ROWS = 56_873
 EXPECTED_HOST_ROWS = 29_047
 
+DATE_FIELDS = [
+    "last_scraped",
+    "calendar_last_scraped",
+    "price_quote_checkin_date",
+    "price_quote_checkout_date",
+    "first_review",
+    "last_review",
+]
+
 HOST_FIELDS_NORMALISED = [
     "host_profile_id",
     "host_profile_url",
@@ -328,6 +337,123 @@ def validate_cleaning_results(
         )
 
 
+def validate_date_fields(
+    raw: pd.DataFrame,
+    listings: pd.DataFrame,
+) -> None:
+    """Check that selected dates remain valid and unchanged."""
+    for field in DATE_FIELDS:
+        if field not in raw.columns or field not in listings.columns:
+            raise KeyError(
+                f"Required date field is missing: {field}"
+            )
+
+        raw_parsed = pd.to_datetime(
+            raw[field],
+            format="%Y-%m-%d",
+            errors="coerce",
+        )
+        processed_parsed = pd.to_datetime(
+            listings[field],
+            format="%Y-%m-%d",
+            errors="coerce",
+        )
+
+        # A non-missing source value that cannot be parsed would make the
+        # raw field unsuitable as a reliable validation baseline.
+        raw_parse_failures = (
+            raw[field].notna()
+            & raw_parsed.isna()
+        )
+
+        if raw_parse_failures.any():
+            failure_count = int(
+                raw_parse_failures.sum()
+            )
+            raise ValueError(
+                f"{field} contains {failure_count} raw parse failures."
+            )
+
+        # Cleaning must not turn an observed date into a missing value.
+        processed_parse_failures = (
+            listings[field].notna()
+            & processed_parsed.isna()
+        )
+
+        if processed_parse_failures.any():
+            failure_count = int(
+                processed_parse_failures.sum()
+            )
+            raise ValueError(
+                f"{field} contains {failure_count} processed "
+                "parse failures."
+            )
+
+        if not raw[field].isna().equals(
+            listings[field].isna()
+        ):
+            raise ValueError(
+                f"Missingness changed for date field {field}."
+            )
+
+        # Because listing row order is validated separately, the parsed
+        # dates can be compared position by position with the source.
+        if not raw_parsed.equals(processed_parsed):
+            raise ValueError(
+                f"Date values changed during cleaning for {field}."
+            )
+
+
+def validate_review_missingness(
+    raw: pd.DataFrame,
+    listings: pd.DataFrame,
+) -> None:
+    """Validate the structural missingness of review-score ratings."""
+    required_columns = {
+        "review_scores_rating",
+        "number_of_reviews",
+    }
+
+    for field in required_columns:
+        if field not in raw.columns or field not in listings.columns:
+            raise KeyError(
+                f"Required review field is missing: {field}"
+            )
+
+    raw_missing = raw["review_scores_rating"].isna()
+    processed_missing = listings[
+        "review_scores_rating"
+    ].isna()
+
+    # Review-score missingness was intentionally retained rather than
+    # imputed, so its position and frequency must remain unchanged.
+    if not raw_missing.equals(processed_missing):
+        raise ValueError(
+            "Review-score missingness changed during cleaning."
+        )
+
+    zero_reviews = listings["number_of_reviews"].eq(0)
+
+    # Profiling established that missing ratings correspond exactly to
+    # listings with no reviews. This is therefore meaningful structural
+    # missingness rather than evidence for arbitrary imputation.
+    if not processed_missing.equals(zero_reviews):
+        raise ValueError(
+            "Missing review ratings no longer correspond exactly "
+            "to listings with zero reviews."
+        )
+
+    missing_count = int(
+        processed_missing.sum()
+    )
+
+    if missing_count != 16_501:
+        raise ValueError(
+            "Unexpected number of missing review ratings: "
+            f"{missing_count:,}"
+        )
+
+
 def main() -> None:
     """Run the basic processed-data validation checks."""
     args = parse_arguments()
@@ -371,6 +497,14 @@ def main() -> None:
         raw,
         listings,
     )
+    validate_date_fields(
+        raw,
+        listings,
+    )
+    validate_review_missingness(
+        raw,
+        listings,
+    )
 
     print("Processed-data validation passed.")
     print(f"Listings: {len(listings):,} rows")
@@ -378,6 +512,13 @@ def main() -> None:
     print(
         "Listing-amenity relationships: "
         f"{len(listing_amenities):,} rows"
+    )
+    print(
+        f"Date fields validated: {len(DATE_FIELDS)}"
+    )
+    print(
+        "Structurally missing review ratings: "
+        f"{listings['review_scores_rating'].isna().sum():,}"
     )
 
 
