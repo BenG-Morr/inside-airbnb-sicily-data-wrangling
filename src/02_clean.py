@@ -68,6 +68,26 @@ HOST_FIELDS_TO_NORMALISE = [
 ]
 
 
+# These fields are entirely missing in the analysed Sicily snapshot and
+# therefore provide no information for the defined analytical scope.
+# They are removed only after their complete missingness is revalidated.
+EMPTY_FIELDS_TO_DROP = [
+    "neighborhood_overview",
+    "host_since",
+    "host_response_time",
+    "host_response_rate",
+    "host_acceptance_rate",
+    "host_thumbnail_url",
+    "host_neighbourhood",
+    "host_total_listings_count",
+    "host_verifications",
+    "neighbourhood",
+    "neighbourhood_group_cleansed",
+    "calendar_updated",
+    "instant_bookable",
+]
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
@@ -464,6 +484,46 @@ def normalise_amenities(
     ).copy()
 
     return listings, listing_amenities
+
+
+def remove_fully_empty_fields(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Remove fields verified as entirely missing in this snapshot."""
+    missing_columns = set(
+        EMPTY_FIELDS_TO_DROP
+    ).difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(
+            sorted(missing_columns)
+        )
+        raise KeyError(
+            "Configured empty fields are missing from the dataset: "
+            f"{missing_names}"
+        )
+
+    # A configured field must still be entirely empty before exclusion.
+    # This prevents a future dataset snapshot from silently losing newly
+    # available information merely because the column name is listed here.
+    non_empty_fields = [
+        field
+        for field in EMPTY_FIELDS_TO_DROP
+        if data[field].notna().any()
+    ]
+
+    if non_empty_fields:
+        non_empty_names = ", ".join(
+            sorted(non_empty_fields)
+        )
+        raise ValueError(
+            "Fields configured for removal contain observed values: "
+            f"{non_empty_names}"
+        )
+
+    return data.drop(
+        columns=EMPTY_FIELDS_TO_DROP
+    ).copy()
 
 
 def validate_price_eur(
@@ -870,6 +930,10 @@ def main() -> None:
         listing_amenities_data,
     )
 
+    cleaned_data = remove_fully_empty_fields(
+        cleaned_data
+    )
+
     write_dataset(
         cleaned_data,
         args.output,
@@ -909,6 +973,8 @@ def main() -> None:
     print(
         "Listings columns after structural normalisation: "
         f"{len(cleaned_data.columns)}")
+    print(
+        f"Fully empty fields removed: {len(EMPTY_FIELDS_TO_DROP)}")
     print(
         f"Hosts columns: {len(hosts_data.columns)}")
     print(
