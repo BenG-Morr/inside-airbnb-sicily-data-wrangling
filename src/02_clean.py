@@ -1,8 +1,9 @@
-"""Clean selected fields in the Inside Airbnb Sicily listings dataset.
+"""Clean and structurally tidy the Inside Airbnb Sicily listings dataset.
 
-This first cleaning stage preserves the raw source columns and derives an
-explicit numeric EUR price field. The transformation is validated against
-the profiling findings before the refined dataset is written to disk.
+The pipeline harmonises selected representations, derives validated fields,
+normalises host and amenity data into separate tables, removes fields that
+are fully empty in the analysed snapshot, and writes processed outputs while
+preserving the raw source file.
 """
 
 import argparse
@@ -91,7 +92,9 @@ EMPTY_FIELDS_TO_DROP = [
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
-        description="Clean selected fields in the Airbnb listings dataset."
+        description=(
+            "Clean and structurally tidy the Airbnb Sicily dataset."
+        )
     )
     parser.add_argument(
         "--input",
@@ -587,56 +590,6 @@ def validate_price_eur(
         )
 
 
-def validate_date_fields(
-        original: pd.DataFrame,
-        cleaned: pd.DataFrame,
-) -> None:
-    """Validate date conversion and preservation of missing values."""
-    for field in DATE_FIELDS_TO_CONVERT:
-        if not pd.api.types.is_datetime64_any_dtype(cleaned[field]):
-            raise TypeError(
-                f"Date conversion failed for field: {field}"
-            )
-
-        original_missing = int(original[field].isna().sum())
-        cleaned_missing = int(cleaned[field].isna().sum())
-
-        if original_missing != cleaned_missing:
-            raise ValueError(
-                f"Date conversion changed missingness in {field}: "
-                f"{original_missing} -> {cleaned_missing}"
-            )
-
-
-def validate_boolean_fields(
-        original: pd.DataFrame,
-        cleaned: pd.DataFrame,
-) -> None:
-    """Validate Boolean counts and preservation of missing values."""
-    for field in BOOLEAN_FIELDS_TO_CONVERT:
-        if str(cleaned[field].dtype) != "boolean":
-            raise TypeError(
-                f"Boolean conversion failed for field: {field}"
-            )
-
-        expected_true = int(original[field].eq("t").sum())
-        expected_false = int(original[field].eq("f").sum())
-        expected_missing = int(original[field].isna().sum())
-
-        actual_true = int(cleaned[field].eq(True).sum())
-        actual_false = int(cleaned[field].eq(False).sum())
-        actual_missing = int(cleaned[field].isna().sum())
-
-        if (
-            expected_true != actual_true
-            or expected_false != actual_false
-            or expected_missing != actual_missing
-        ):
-            raise ValueError(
-                f"Boolean validation failed for field: {field}"
-            )
-
-
 def validate_bathroom_fields(
     original: pd.DataFrame,
     cleaned: pd.DataFrame,
@@ -877,7 +830,7 @@ def write_dataset(
 
 
 def main() -> None:
-    """Run the first stage of the data-cleaning pipeline."""
+    """Run the complete cleaning and structural-tidying pipeline."""
     args = parse_arguments()
 
     raw_data = load_dataset(args.input)
