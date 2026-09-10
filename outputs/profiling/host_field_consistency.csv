@@ -13,3 +13,8 @@ hosts_time_as_user_years,29047,0,1
 hosts_time_as_user_months,29047,0,1
 hosts_time_as_host_years,29046,0,1
 hosts_time_as_host_months,29046,0,1
+host_url,29047,0,1
+calculated_host_listings_count,29047,0,1
+calculated_host_listings_count_entire_homes,29047,0,1
+calculated_host_listings_count_private_rooms,29047,0,1
+calculated_host_listings_count_shared_rooms,29047,0,1

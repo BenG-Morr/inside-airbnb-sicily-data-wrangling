@@ -47,6 +47,17 @@ HOST_FIELDS_FOR_CONSISTENCY = [
     "hosts_time_as_host_months",
 ]
 
+# These additional fields also appear conceptually host-related, but their
+# within-host consistency is checked before deciding whether they should
+# be moved from the listing table into the normalised hosts table.
+HOST_CANDIDATE_FIELDS_FOR_CONSISTENCY = [
+    "host_url",
+    "calculated_host_listings_count",
+    "calculated_host_listings_count_entire_homes",
+    "calculated_host_listings_count_private_rooms",
+    "calculated_host_listings_count_shared_rooms",
+]
+
 # These fields conceptually represent calendar dates. Profiling them
 # explicitly allows later conversion to datetime values only after their
 # source representation has been shown to be parseable.
@@ -527,14 +538,19 @@ def build_host_consistency_checks(
         raise KeyError("Expected column 'host_id' was not found.")
 
     results = []
+    fields_to_check = (
+        HOST_FIELDS_FOR_CONSISTENCY
+        + HOST_CANDIDATE_FIELDS_FOR_CONSISTENCY
+    )
 
-    for field in HOST_FIELDS_FOR_CONSISTENCY:
+    for field in fields_to_check:
         if field not in data.columns:
             continue
 
-        # Missing values are deliberately excluded from the distinct-value
-        # count. A host having one observed value and additional missing
-        # values is incomplete, but it is not internally contradictory.
+        # Missing values are deliberately excluded from the distinct-
+        # value count. A host having one observed value and additional
+        # missing values is incomplete, but it is not internally
+        # contradictory.
         distinct_values_per_host = (
             data.groupby("host_id")[field]
             .nunique(dropna=True)
