@@ -82,6 +82,28 @@ BOOLEAN_FIELDS_FOR_PROFILING = [
 ]
 
 
+# Scalar fields contained in the nested price quote object. The separate
+# line-item list is profiled independently because it contains another
+# repeated structure rather than one scalar value per quote.
+PRICE_QUOTE_SCALAR_FIELDS = [
+    "taxes",
+    "currency",
+    "date_match",
+    "service_fee",
+    "total_price",
+    "cleaning_fee",
+    "is_available",
+    "discount_amount",
+    "price_per_night",
+    "nightly_subtotal",
+    "discounted_subtotal",
+    "returned_checkin_date",
+    "requested_checkin_date",
+    "returned_checkout_date",
+    "requested_checkout_date",
+]
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
@@ -383,6 +405,203 @@ def build_price_representation_checks(
     ]
 
     return pd.DataFrame(checks)
+
+
+def build_price_quote_structure_checks(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Profile information contained in the nested price quote field.
+
+    Scalar quote attributes, nested line-item types and the four existing
+    dedicated quote columns are assessed separately. This establishes
+    whether removing the raw JSON object would cause information loss.
+    """
+    required_columns = {
+        "price_quote_raw",
+        "price_quote_checkin_date",
+        "price_quote_checkout_date",
+        "price_quote_total_price",
+        "price_quote_price_per_night",
+    }
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(
+            f"Missing required price-quote columns: {missing_names}"
+        )
+
+    quote_records = []
+    line_item_types = []
+
+    for row_index, raw_value in data["price_quote_raw"].dropna().items():
+        try:
+            parsed_value = json.loads(str(raw_value))
+        except json.JSONDecodeError:
+            # Parse errors are already counted by the general price
+            # representation diagnostics and are omitted here.
+            continue
+
+        quote = parsed_value.get("quote")
+
+        if not isinstance(quote, dict):
+            continue
+
+        record = {
+            "_row_index": row_index,
+        }
+
+        for field in PRICE_QUOTE_SCALAR_FIELDS:
+            record[field] = quote.get(field)
+
+        quote_records.append(record)
+
+        line_items = quote.get("raw_price_line_items")
+
+        if isinstance(line_items, list):
+            for item in line_items:
+                if isinstance(item, dict):
+                    line_item_types.append(
+                        item.get("item_type")
+                    )
+
+    quotes = (
+        pd.DataFrame(quote_records)
+        .set_index("_row_index")
+    )
+
+    field_profile = []
+
+    for field in PRICE_QUOTE_SCALAR_FIELDS:
+        field_profile.append(
+            {
+                "field": field,
+                "non_missing_values": int(
+                    quotes[field].notna().sum()
+                ),
+                "unique_non_missing_values": int(
+                    quotes[field].nunique(dropna=True)
+                ),
+            }
+        )
+
+    field_profile = pd.DataFrame(field_profile)
+
+    line_item_profile = (
+        pd.Series(
+            line_item_types,
+            dtype="string",
+            name="item_type",
+        )
+        .value_counts(dropna=False)
+        .rename_axis("item_type")
+        .reset_index(name="count")
+    )
+
+    comparisons = [
+        (
+            "requested_checkin_date",
+            "price_quote_checkin_date",
+            "text",
+        ),
+        (
+            "requested_checkout_date",
+            "price_quote_checkout_date",
+            "text",
+        ),
+        (
+            "total_price",
+            "price_quote_total_price",
+            "numeric",
+        ),
+        (
+            "price_per_night",
+            "price_quote_price_per_night",
+            "numeric",
+        ),
+    ]
+
+    comparison_results = []
+
+    for nested_field, dedicated_field, value_type in comparisons:
+        nested_values = quotes[nested_field]
+        dedicated_values = data.loc[
+            quotes.index,
+            dedicated_field,
+        ]
+
+        if value_type == "numeric":
+            nested_values = pd.to_numeric(
+                nested_values,
+                errors="coerce",
+            )
+            dedicated_values = pd.to_numeric(
+                dedicated_values,
+                errors="coerce",
+            )
+
+        comparable = (
+            nested_values.notna()
+            & dedicated_values.notna()
+        )
+
+        if value_type == "numeric":
+            absolute_difference = (
+                nested_values[comparable]
+                - dedicated_values[comparable]
+            ).abs()
+
+            mismatches = int(
+                absolute_difference.gt(0.001).sum()
+            )
+
+            if absolute_difference.empty:
+                maximum_difference = None
+            else:
+                maximum_difference = float(
+                    absolute_difference.max()
+                )
+        else:
+            mismatches = int(
+                (
+                    nested_values[comparable].astype(str)
+                    != dedicated_values[comparable].astype(str)
+                ).sum()
+            )
+            maximum_difference = None
+
+        missingness_disagreements = int(
+            (
+                nested_values.isna()
+                != dedicated_values.isna()
+            ).sum()
+        )
+
+        comparison_results.append(
+            {
+                "nested_field": nested_field,
+                "dedicated_field": dedicated_field,
+                "value_type": value_type,
+                "comparable_values": int(comparable.sum()),
+                "mismatches": mismatches,
+                "missingness_disagreements": (
+                    missingness_disagreements
+                ),
+                "maximum_absolute_difference": (
+                    maximum_difference
+                ),
+            }
+        )
+
+    comparison_profile = pd.DataFrame(
+        comparison_results
+    )
+
+    return (
+        field_profile,
+        line_item_profile,
+        comparison_profile,
+    )
 
 
 def build_bathroom_checks(
@@ -1420,6 +1639,12 @@ def main() -> None:
         price_numeric,
     )
 
+    (
+        price_quote_field_profile,
+        price_quote_line_items,
+        price_quote_comparisons,
+    ) = build_price_quote_structure_checks(data)
+
     price_missingness = build_price_missingness_by_source(data)
 
     # The price distribution is profiled separately from representation
@@ -1493,6 +1718,24 @@ def main() -> None:
         price_checks,
         args.output_dir,
         "price_representation_checks.csv",
+    )
+
+    price_quote_field_profile_path = write_csv(
+        price_quote_field_profile,
+        args.output_dir,
+        "price_quote_field_profile.csv",
+    )
+
+    price_quote_line_items_path = write_csv(
+        price_quote_line_items,
+        args.output_dir,
+        "price_quote_line_item_types.csv",
+    )
+
+    price_quote_comparisons_path = write_csv(
+        price_quote_comparisons,
+        args.output_dir,
+        "price_quote_dedicated_comparisons.csv",
     )
 
     price_distribution_path = write_csv(
@@ -1578,6 +1821,18 @@ def main() -> None:
     print(
         "Price-representation checks written to: "
         f"{price_checks_path.resolve()}"
+    )
+    print(
+        "Price-quote field profile written to: "
+        f"{price_quote_field_profile_path.resolve()}"
+    )
+    print(
+        "Price-quote line-item types written to: "
+        f"{price_quote_line_items_path.resolve()}"
+    )
+    print(
+        "Price-quote comparisons written to: "
+        f"{price_quote_comparisons_path.resolve()}"
     )
     print(
         "Price-distribution checks written to: "

@@ -1,0 +1,16 @@
+field,non_missing_values,unique_non_missing_values
+taxes,1825,57
+currency,52318,1
+date_match,0,0
+service_fee,0,0
+total_price,51863,12318
+cleaning_fee,526,50
+is_available,54155,2
+discount_amount,9760,3508
+price_per_night,51863,14552
+nightly_subtotal,45490,14525
+discounted_subtotal,43142,16153
+returned_checkin_date,0,0
+requested_checkin_date,54261,312
+returned_checkout_date,0,0
+requested_checkout_date,54261,331

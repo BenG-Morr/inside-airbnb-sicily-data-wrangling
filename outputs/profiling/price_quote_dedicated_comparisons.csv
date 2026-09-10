@@ -1,0 +1,5 @@
+nested_field,dedicated_field,value_type,comparable_values,mismatches,missingness_disagreements,maximum_absolute_difference
+requested_checkin_date,price_quote_checkin_date,text,54261,0,0,
+requested_checkout_date,price_quote_checkout_date,text,54261,0,0,
+total_price,price_quote_total_price,numeric,51863,0,0,0.0
+price_per_night,price_quote_price_per_night,numeric,51863,13408,0,0.005000000001018634
