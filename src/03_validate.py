@@ -26,6 +26,16 @@ DATE_FIELDS = [
     "last_review",
 ]
 
+LISTING_BOOLEAN_FIELDS = [
+    "has_availability",
+]
+
+HOST_BOOLEAN_FIELDS = [
+    "host_is_superhost",
+    "host_has_profile_pic",
+    "host_identity_verified",
+]
+
 HOST_FIELDS_NORMALISED = [
     "host_profile_id",
     "host_profile_url",
@@ -454,6 +464,152 @@ def validate_review_missingness(
         )
 
 
+def canonicalise_raw_boolean(
+    series: pd.Series,
+    field: str,
+) -> pd.Series:
+    """Map raw t/f values to a nullable Boolean representation."""
+    unexpected = (
+        series.notna()
+        & ~series.isin(["t", "f"])
+    )
+
+    if unexpected.any():
+        unexpected_values = sorted(
+            series.loc[unexpected].astype(str).unique()
+        )
+        raise ValueError(
+            f"Unexpected raw Boolean values in {field}: "
+            f"{unexpected_values}"
+        )
+
+    return series.map(
+        {
+            "t": True,
+            "f": False,
+        }
+    ).astype("boolean")
+
+
+def canonicalise_processed_boolean(
+    series: pd.Series,
+    field: str,
+) -> pd.Series:
+    """Map processed Boolean values to one comparable representation."""
+    mapped = series.map(
+        {
+            True: True,
+            False: False,
+            "True": True,
+            "False": False,
+        }
+    )
+
+    unexpected = (
+        series.notna()
+        & mapped.isna()
+    )
+
+    if unexpected.any():
+        unexpected_values = sorted(
+            series.loc[unexpected].astype(str).unique()
+        )
+        raise ValueError(
+            f"Unexpected processed Boolean values in {field}: "
+            f"{unexpected_values}"
+        )
+
+    return mapped.astype("boolean")
+
+
+def validate_boolean_fields(
+    raw: pd.DataFrame,
+    listings: pd.DataFrame,
+    hosts: pd.DataFrame,
+) -> None:
+    """Validate Boolean harmonisation in the processed tables."""
+    for field in LISTING_BOOLEAN_FIELDS:
+        if field not in raw.columns or field not in listings.columns:
+            raise KeyError(
+                f"Required listing Boolean field is missing: {field}"
+            )
+
+        expected = canonicalise_raw_boolean(
+            raw[field],
+            field,
+        )
+        actual = canonicalise_processed_boolean(
+            listings[field],
+            field,
+        )
+
+        # Listing row order is validated elsewhere, so Boolean values can
+        # be compared directly with their corresponding source rows.
+        if not expected.reset_index(drop=True).equals(
+            actual.reset_index(drop=True)
+        ):
+            raise ValueError(
+                f"Boolean values changed during cleaning for {field}."
+            )
+
+    for field in HOST_BOOLEAN_FIELDS:
+        if field not in raw.columns or field not in hosts.columns:
+            raise KeyError(
+                f"Required host Boolean field is missing: {field}"
+            )
+
+        raw_values = canonicalise_raw_boolean(
+            raw[field],
+            field,
+        )
+
+        raw_host_values = pd.DataFrame(
+            {
+                "host_id": raw["host_id"],
+                field: raw_values,
+            }
+        )
+
+        # Host attributes occurred repeatedly in the raw listing table.
+        # Verify consistency before deriving one expected value per host.
+        distinct_values = (
+            raw_host_values.groupby("host_id")[field]
+            .nunique(dropna=True)
+        )
+
+        if distinct_values.gt(1).any():
+            conflict_count = int(
+                distinct_values.gt(1).sum()
+            )
+            raise ValueError(
+                f"{field} has conflicting values for "
+                f"{conflict_count} hosts."
+            )
+
+        expected_by_host = (
+            raw_host_values.groupby("host_id")[field]
+            .first()
+            .sort_index()
+            .astype("boolean")
+        )
+
+        processed_values = canonicalise_processed_boolean(
+            hosts[field],
+            field,
+        )
+        actual_by_host = pd.Series(
+            processed_values.array,
+            index=hosts["host_id"],
+            name=field,
+        ).sort_index()
+
+        if not expected_by_host.equals(actual_by_host):
+            raise ValueError(
+                "Normalised host Boolean values differ from "
+                f"the raw data for {field}."
+            )
+
+
 def main() -> None:
     """Run the basic processed-data validation checks."""
     args = parse_arguments()
@@ -505,6 +661,11 @@ def main() -> None:
         raw,
         listings,
     )
+    validate_boolean_fields(
+        raw,
+        listings,
+        hosts,
+    )
 
     print("Processed-data validation passed.")
     print(f"Listings: {len(listings):,} rows")
@@ -519,6 +680,10 @@ def main() -> None:
     print(
         "Structurally missing review ratings: "
         f"{listings['review_scores_rating'].isna().sum():,}"
+    )
+    print(
+        "Boolean fields validated: "
+        f"{len(LISTING_BOOLEAN_FIELDS) + len(HOST_BOOLEAN_FIELDS)}"
     )
 
 
