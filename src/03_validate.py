@@ -150,6 +150,49 @@ def validate_primary_keys(
         )
 
 
+def validate_referential_integrity(
+    listings: pd.DataFrame,
+    hosts: pd.DataFrame,
+    listing_amenities: pd.DataFrame,
+) -> None:
+    """Check foreign-key relationships between the processed tables.
+
+    Each listing must reference an existing host, and each listing-amenity
+    relationship must reference an existing listing. Missing references
+    indicate that structural normalisation has orphaned records.
+    """
+    # `host_id` acts as a foreign key from listings to the normalised
+    # host table. Every listing should resolve to exactly one host record.
+    missing_host_references = (
+        ~listings["host_id"].isin(hosts["host_id"])
+    )
+
+    if missing_host_references.any():
+        missing_count = int(
+            missing_host_references.sum()
+        )
+        raise ValueError(
+            f"{missing_count} listings reference missing hosts."
+        )
+
+    # `listing_id` links each amenity relationship back to its parent
+    # listing. No relationship row should refer to a listing that was
+    # removed or lost during cleaning.
+    missing_listing_references = (
+        ~listing_amenities["listing_id"].isin(
+            listings["id"]
+        )
+    )
+
+    if missing_listing_references.any():
+        missing_count = int(
+            missing_listing_references.sum()
+        )
+        raise ValueError(
+            f"{missing_count} amenity rows reference missing listings."
+        )
+
+
 def main() -> None:
     """Run the basic processed-data validation checks."""
     args = parse_arguments()
@@ -180,8 +223,13 @@ def main() -> None:
         listings,
         hosts,
     )
+    validate_referential_integrity(
+        listings,
+        hosts,
+        listing_amenities,
+    )
 
-    print("Basic processed-data validation passed.")
+    print("Processed-data validation passed.")
     print(f"Listings: {len(listings):,} rows")
     print(f"Hosts: {len(hosts):,} rows")
     print(
