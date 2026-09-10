@@ -1260,6 +1260,9 @@ def build_data_quality_inventory(
     data: pd.DataFrame,
     column_profile: pd.DataFrame,
     price_checks: pd.DataFrame,
+    price_quote_field_profile: pd.DataFrame,
+    price_quote_line_items: pd.DataFrame,
+    price_quote_comparisons: pd.DataFrame,
     price_missingness: pd.DataFrame,
     review_checks: pd.DataFrame,
     bathroom_checks: pd.DataFrame,
@@ -1315,6 +1318,49 @@ def build_data_quality_inventory(
     quote_currency_parse_errors = get_check_value(
         price_checks,
         "quote_currency_parse_errors",
+    )
+
+    quote_line_item_count = int(
+        price_quote_line_items["count"].sum()
+    )
+
+    quote_price_per_night = price_quote_comparisons.loc[
+        price_quote_comparisons["nested_field"].eq(
+            "price_per_night"
+        )
+    ]
+
+    if len(quote_price_per_night) != 1:
+        raise ValueError(
+            "Expected one price_per_night quote comparison."
+        )
+
+    quote_price_per_night_mismatches = int(
+        quote_price_per_night["mismatches"].iloc[0]
+    )
+
+    quote_price_per_night_max_difference = float(
+        quote_price_per_night[
+            "maximum_absolute_difference"
+        ].iloc[0]
+    )
+
+    quote_nightly_subtotal_count = int(
+        get_named_value(
+            price_quote_field_profile,
+            "field",
+            "nightly_subtotal",
+            "non_missing_values",
+        )
+    )
+
+    quote_discounted_subtotal_count = int(
+        get_named_value(
+            price_quote_field_profile,
+            "field",
+            "discounted_subtotal",
+            "non_missing_values",
+        )
     )
 
     missing_review_ratings = get_check_value(
@@ -1560,8 +1606,8 @@ def build_data_quality_inventory(
             ),
             "evidence": (
                 f"{data['host_id'].nunique()} unique hosts; "
-                f"{host_conflicts} host-field conflicts across the "
-                "selected attributes."
+                f"{len(host_checks)} host-level fields checked; "
+                f"{host_conflicts} host-field conflicts."
             ),
             "proposed_treatment": (
                 "Normalise selected host attributes into one row per "
@@ -1618,9 +1664,10 @@ def build_data_quality_inventory(
                 f"maximum: {maximum_price:.2f}."
             ),
             "proposed_treatment": (
-                "Retain extreme values initially; use robust summaries "
-                "and sensitivity analysis before considering any "
-                "documented exclusion rule."
+                "Retain extreme values in the refined dataset and use "
+                "robust summaries plus upper-tail sensitivity analysis "
+                "to quantify their statistical influence without "
+                "classifying them as errors."
             ),
         },
         {
@@ -1638,6 +1685,36 @@ def build_data_quality_inventory(
                 "Do not apply an unnecessary deduplication step."
             ),
         },
+        {
+            "issue_id": "DQ12",
+            "quality_aspect": (
+                "Structural tidiness / information preservation"
+            ),
+            "finding": (
+                "The nested raw price-quote object contains additional "
+                "quote-level and repeated line-item information that is "
+                "not fully represented by the dedicated quote columns."
+            ),
+            "evidence": (
+                f"{row_count - quote_raw_missing} raw quotes are present; "
+                f"{quote_nightly_subtotal_count} contain "
+                "nightly_subtotal; "
+                f"{quote_discounted_subtotal_count} contain "
+                "discounted_subtotal; "
+                f"{quote_line_item_count} nested line items were found; "
+                f"{quote_price_per_night_mismatches} nested and "
+                "dedicated price_per_night values differ above the "
+                "comparison tolerance, with maximum absolute difference "
+                f"{quote_price_per_night_max_difference:.3f}."
+            ),
+            "proposed_treatment": (
+                "Normalise quote-level attributes and repeated line "
+                "items into separate relational tables, preserving "
+                "listing_id and line-item position, before removing the "
+                "nested quote representation from the refined listings "
+                "table."
+            ),
+        }
     ]
 
     return pd.DataFrame(inventory)
@@ -1729,6 +1806,9 @@ def main() -> None:
         data=data,
         column_profile=column_profile,
         price_checks=price_checks,
+        price_quote_field_profile=price_quote_field_profile,
+        price_quote_line_items=price_quote_line_items,
+        price_quote_comparisons=price_quote_comparisons,
         price_missingness=price_missingness,
         review_checks=review_checks,
         bathroom_checks=bathroom_checks,
