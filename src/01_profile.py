@@ -11,6 +11,7 @@ stage.
 """
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -132,6 +133,40 @@ def load_dataset(input_path: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     return pd.read_csv(input_path, low_memory=False)
+
+
+def calculate_sha256(input_path: Path) -> str:
+    """Calculate the SHA-256 checksum of the unmodified input file."""
+    digest = hashlib.sha256()
+
+    # Read the file in chunks so the checksum does not require loading the
+    # complete compressed source file into memory at once.
+    with input_path.open("rb") as input_file:
+        for chunk in iter(
+            lambda: input_file.read(1024 * 1024),
+            b"",
+        ):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def build_dataset_metadata(
+    input_path: Path,
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Record identifiers for the exact raw dataset used in profiling."""
+    metadata = [
+        {
+            "source_file": input_path.name,
+            "sha256": calculate_sha256(input_path),
+            "file_size_bytes": input_path.stat().st_size,
+            "row_count": len(data),
+            "column_count": len(data.columns),
+        }
+    ]
+
+    return pd.DataFrame(metadata)
 
 
 def build_column_profile(data: pd.DataFrame) -> pd.DataFrame:
@@ -1631,6 +1666,10 @@ def main() -> None:
     args = parse_arguments()
 
     data = load_dataset(args.input)
+    dataset_metadata = build_dataset_metadata(
+        args.input,
+        data,
+    )
     column_profile = build_column_profile(data)
     price_numeric = parse_price_values(data)
 
@@ -1700,6 +1739,12 @@ def main() -> None:
         price_distribution=price_distribution,
         duplicate_rows=duplicate_rows,
         duplicate_ids=duplicate_ids,
+    )
+
+    dataset_metadata_path = write_csv(
+        dataset_metadata,
+        args.output_dir,
+        "dataset_metadata.csv",
     )
 
     column_profile_path = write_csv(
@@ -1805,6 +1850,10 @@ def main() -> None:
     if duplicate_ids is not None:
         print(f"Duplicate listing IDs: {duplicate_ids:,}")
 
+    print(
+        "Dataset metadata written to: "
+        f"{dataset_metadata_path.resolve()}"
+    )
     print(
         "Column profile written to: "
         f"{column_profile_path.resolve()}"

@@ -6,4 +6,8 @@ The raw dataset is not stored in this repository. Place the source file locally 
 data/raw/listings.csv.gz
 ```
 
-The profiling script records a SHA-256 checksum of the input file so that the exact dataset used for the analysis can be identified.
+The profiling script records the source filename, SHA-256 checksum, file
+size, and dataset dimensions in
+`outputs/profiling/dataset_metadata.csv`. This allows the exact input file
+used for the analysis to be identified without storing the raw dataset in
+the repository.
