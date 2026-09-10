@@ -94,6 +94,63 @@ EMPTY_FIELDS_TO_DROP = [
 ]
 
 
+# The nested quote object contains information that is not fully represented
+# by the existing dedicated columns. It is therefore normalised rather than
+# simply discarded from the refined listing table.
+PRICE_QUOTE_COLUMNS_TO_REMOVE = [
+    "price_quote_checkin_date",
+    "price_quote_checkout_date",
+    "price_quote_total_price",
+    "price_quote_price_per_night",
+    "price_quote_raw",
+]
+
+PRICE_QUOTE_OUTPUT_FIELDS = [
+    "taxes",
+    "currency",
+    "total_price",
+    "cleaning_fee",
+    "is_available",
+    "discount_amount",
+    "price_per_night",
+    "nightly_subtotal",
+    "discounted_subtotal",
+    "requested_checkin_date",
+    "requested_checkout_date",
+]
+
+PRICE_QUOTE_NUMERIC_FIELDS = [
+    "taxes",
+    "total_price",
+    "cleaning_fee",
+    "discount_amount",
+    "price_per_night",
+    "nightly_subtotal",
+    "discounted_subtotal",
+]
+
+PRICE_QUOTE_DATE_FIELDS = [
+    "requested_checkin_date",
+    "requested_checkout_date",
+]
+
+# Profiling established that these nested fields are completely empty in
+# the analysed snapshot. They are excluded only after this is revalidated.
+EMPTY_PRICE_QUOTE_FIELDS = [
+    "date_match",
+    "service_fee",
+    "returned_checkin_date",
+    "returned_checkout_date",
+]
+
+PRICE_QUOTE_LINE_ITEM_FIELDS = [
+    "amount",
+    "item_type",
+    "description",
+    "price_string",
+]
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for input and output paths."""
     parser = argparse.ArgumentParser(
@@ -124,6 +181,18 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Path for the normalised listing-amenities CSV file.",
+    )
+    parser.add_argument(
+        "--price-quotes-output",
+        type=Path,
+        required=True,
+        help="Path for the normalised price-quotes CSV file.",
+    )
+    parser.add_argument(
+        "--price-quote-line-items-output",
+        type=Path,
+        required=True,
+        help="Path for the normalised quote line-items CSV file.",
     )
 
     return parser.parse_args()
@@ -415,6 +484,216 @@ def normalise_host_data(
     return listings, hosts
 
 
+def normalise_price_quotes(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Separate nested price quotes and their line items from listings."""
+    required_columns = {
+        "id",
+        *PRICE_QUOTE_COLUMNS_TO_REMOVE,
+    }
+    missing_columns = required_columns.difference(data.columns)
+
+    if missing_columns:
+        missing_names = ", ".join(sorted(missing_columns))
+        raise KeyError(
+            f"Missing required price-quote columns: {missing_names}"
+        )
+
+    expected_quote_fields = {
+        *PRICE_QUOTE_OUTPUT_FIELDS,
+        *EMPTY_PRICE_QUOTE_FIELDS,
+        "raw_price_line_items",
+    }
+
+    quote_records = []
+    line_item_records = []
+
+    for listing_id, raw_quote in data[
+        ["id", "price_quote_raw"]
+    ].itertuples(index=False, name=None):
+        if pd.isna(raw_quote):
+            continue
+
+        try:
+            parsed = json.loads(str(raw_quote))
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"Invalid price quote JSON for listing {listing_id}."
+            ) from error
+
+        # Profiling found one outer `quote` object. Refuse unexpected
+        # top-level information rather than silently dropping it.
+        if not isinstance(parsed, dict) or set(parsed) != {"quote"}:
+            raise ValueError(
+                f"Unexpected price quote structure for listing {listing_id}."
+            )
+
+        quote = parsed["quote"]
+
+        if not isinstance(quote, dict):
+            raise TypeError(
+                f"Quote is not an object for listing {listing_id}."
+            )
+
+        unexpected_fields = set(quote).difference(
+            expected_quote_fields
+        )
+
+        if unexpected_fields:
+            unexpected_names = ", ".join(
+                sorted(unexpected_fields)
+            )
+            raise ValueError(
+                "Unexpected nested price-quote fields for listing "
+                f"{listing_id}: {unexpected_names}"
+            )
+
+        non_empty_excluded_fields = [
+            field
+            for field in EMPTY_PRICE_QUOTE_FIELDS
+            if quote.get(field) is not None
+        ]
+
+        if non_empty_excluded_fields:
+            field_names = ", ".join(
+                non_empty_excluded_fields
+            )
+            raise ValueError(
+                "Price-quote fields configured as empty contain values: "
+                f"{field_names}"
+            )
+
+        line_items = quote.get("raw_price_line_items")
+
+        if line_items is None:
+            line_items_missing = True
+            line_item_count = 0
+        elif isinstance(line_items, list):
+            line_items_missing = False
+            line_item_count = len(line_items)
+        else:
+            raise TypeError(
+                "Quote line items are neither a list nor missing for "
+                f"listing {listing_id}."
+            )
+
+        quote_record = {
+            "listing_id": listing_id,
+        }
+
+        for field in PRICE_QUOTE_OUTPUT_FIELDS:
+            quote_record[field] = quote.get(field)
+
+        quote_record["line_items_missing"] = (
+            line_items_missing
+        )
+        quote_record["line_item_count"] = line_item_count
+        quote_records.append(quote_record)
+
+        if isinstance(line_items, list):
+            for position, item in enumerate(
+                line_items,
+                start=1,
+            ):
+                if not isinstance(item, dict):
+                    raise TypeError(
+                        "Non-object quote line item found for listing "
+                        f"{listing_id}."
+                    )
+
+                unexpected_item_fields = set(item).difference(
+                    PRICE_QUOTE_LINE_ITEM_FIELDS
+                )
+
+                if unexpected_item_fields:
+                    unexpected_names = ", ".join(
+                        sorted(unexpected_item_fields)
+                    )
+                    raise ValueError(
+                        "Unexpected quote line-item fields for listing "
+                        f"{listing_id}: {unexpected_names}"
+                    )
+
+                line_item_record = {
+                    "listing_id": listing_id,
+                    "line_item_position": position,
+                }
+
+                for field in PRICE_QUOTE_LINE_ITEM_FIELDS:
+                    line_item_record[field] = item.get(field)
+
+                line_item_records.append(
+                    line_item_record
+                )
+
+    price_quotes = pd.DataFrame(
+        quote_records,
+        columns=[
+            "listing_id",
+            *PRICE_QUOTE_OUTPUT_FIELDS,
+            "line_items_missing",
+            "line_item_count",
+        ],
+    )
+
+    line_items = pd.DataFrame(
+        line_item_records,
+        columns=[
+            "listing_id",
+            "line_item_position",
+            *PRICE_QUOTE_LINE_ITEM_FIELDS,
+        ],
+    )
+
+    # Numeric representations are harmonised after the nested structure has
+    # been preserved. Conversion errors stop the pipeline rather than being
+    # silently converted into additional missing values.
+    for field in PRICE_QUOTE_NUMERIC_FIELDS:
+        price_quotes[field] = pd.to_numeric(
+            price_quotes[field],
+            errors="raise",
+        )
+
+    for field in PRICE_QUOTE_DATE_FIELDS:
+        price_quotes[field] = pd.to_datetime(
+            price_quotes[field],
+            format="%Y-%m-%d",
+            errors="raise",
+        )
+
+    invalid_availability = (
+        price_quotes["is_available"].notna()
+        & ~price_quotes["is_available"].map(
+            lambda value: isinstance(value, bool)
+        )
+    )
+
+    if invalid_availability.any():
+        raise ValueError(
+            "Unexpected values found in quote is_available."
+        )
+
+    price_quotes["is_available"] = (
+        price_quotes["is_available"].astype("boolean")
+    )
+    price_quotes["line_items_missing"] = (
+        price_quotes["line_items_missing"].astype("boolean")
+    )
+
+    if not line_items.empty:
+        line_items["amount"] = pd.to_numeric(
+            line_items["amount"],
+            errors="raise",
+        )
+
+    listings = data.drop(
+        columns=PRICE_QUOTE_COLUMNS_TO_REMOVE
+    ).copy()
+
+    return listings, price_quotes, line_items
+
+
 def normalise_amenities(
     data: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -639,6 +918,116 @@ def validate_bathroom_fields(
     if conflict_count != 6:
         raise ValueError(
             f"Expected 6 bathroom conflicts, found {conflict_count}."
+        )
+
+
+def validate_price_quote_normalisation(
+    original: pd.DataFrame,
+    listings: pd.DataFrame,
+    price_quotes: pd.DataFrame,
+    line_items: pd.DataFrame,
+) -> None:
+    """Validate quote extraction and preservation of source information."""
+    expected_quote_rows = int(
+        original["price_quote_raw"].notna().sum()
+    )
+
+    if len(price_quotes) != expected_quote_rows:
+        raise ValueError(
+            "Unexpected number of normalised price quotes: "
+            f"{len(price_quotes):,}"
+        )
+
+    if price_quotes["listing_id"].duplicated().any():
+        raise ValueError(
+            "The price-quotes table contains duplicate listing IDs."
+        )
+
+    missing_quote_references = (
+        ~price_quotes["listing_id"].isin(listings["id"])
+    )
+
+    if missing_quote_references.any():
+        raise ValueError(
+            "Price quotes reference listings that do not exist."
+        )
+
+    missing_line_item_references = (
+        ~line_items["listing_id"].isin(listings["id"])
+    )
+
+    if missing_line_item_references.any():
+        raise ValueError(
+            "Quote line items reference listings that do not exist."
+        )
+
+    duplicate_positions = line_items.duplicated(
+        subset=["listing_id", "line_item_position"]
+    )
+
+    if duplicate_positions.any():
+        raise ValueError(
+            "Duplicate quote line-item positions were found."
+        )
+
+    remaining_source_columns = set(
+        PRICE_QUOTE_COLUMNS_TO_REMOVE
+    ).intersection(listings.columns)
+
+    if remaining_source_columns:
+        remaining_names = ", ".join(
+            sorted(remaining_source_columns)
+        )
+        raise ValueError(
+            "Nested or duplicated quote fields remain in listings: "
+            f"{remaining_names}"
+        )
+
+    # Dedicated quote columns must contain no values for listings without
+    # a raw quote; otherwise removing them would discard information.
+    no_raw_quote = original["price_quote_raw"].isna()
+
+    for field in PRICE_QUOTE_COLUMNS_TO_REMOVE[:-1]:
+        if original.loc[no_raw_quote, field].notna().any():
+            raise ValueError(
+                f"{field} contains values without a raw price quote."
+            )
+
+    expected_line_item_rows = 0
+    expected_missing_lists = 0
+
+    for raw_quote in original["price_quote_raw"].dropna():
+        quote = json.loads(str(raw_quote))["quote"]
+        source_line_items = quote.get(
+            "raw_price_line_items"
+        )
+
+        if source_line_items is None:
+            expected_missing_lists += 1
+        else:
+            expected_line_item_rows += len(
+                source_line_items
+            )
+
+    if len(line_items) != expected_line_item_rows:
+        raise ValueError(
+            "Quote line-item row count differs from the nested source."
+        )
+
+    actual_missing_lists = int(
+        price_quotes["line_items_missing"].sum()
+    )
+
+    if actual_missing_lists != expected_missing_lists:
+        raise ValueError(
+            "Missing quote line-item lists were not preserved."
+        )
+
+    if int(price_quotes["line_item_count"].sum()) != len(
+        line_items
+    ):
+        raise ValueError(
+            "Quote line-item counts do not match the line-item table."
         )
 
 
@@ -867,6 +1256,19 @@ def main() -> None:
         cleaned_data,
     )
 
+    (
+        cleaned_data,
+        price_quotes_data,
+        price_quote_line_items_data,
+    ) = normalise_price_quotes(cleaned_data)
+
+    validate_price_quote_normalisation(
+        raw_data,
+        cleaned_data,
+        price_quotes_data,
+        price_quote_line_items_data,
+    )
+
     cleaned_data, hosts_data = normalise_host_data(
         cleaned_data
     )
@@ -903,6 +1305,14 @@ def main() -> None:
     write_dataset(
         listing_amenities_data,
         args.amenities_output,
+    )
+    write_dataset(
+        price_quotes_data,
+        args.price_quotes_output,
+    )
+    write_dataset(
+        price_quote_line_items_data,
+        args.price_quote_line_items_output,
     )
 
     print("Cleaning and structural tidying complete.")
@@ -941,11 +1351,27 @@ def main() -> None:
     print(
         "Listing-amenity columns: "
         f"{len(listing_amenities_data.columns)}")
+    print(
+        f"Normalised price quotes: {len(price_quotes_data):,}")
+    print(
+        "Normalised quote line-item rows: "
+        f"{len(price_quote_line_items_data):,}")
+    print(
+        f"Price-quote columns: {len(price_quotes_data.columns)}")
+    print(
+        "Price-quote line-item columns: "
+        f"{len(price_quote_line_items_data.columns)}")
     print(f"Listings written to: {args.output.resolve()}")
     print(f"Hosts written to: {args.hosts_output.resolve()}")
     print(
         "Listing amenities written to: "
         f"{args.amenities_output.resolve()}")
+    print(
+        "Price quotes written to: "
+        f"{args.price_quotes_output.resolve()}")
+    print(
+        "Price quote line items written to: "
+        f"{args.price_quote_line_items_output.resolve()}")
 
 
 if __name__ == "__main__":

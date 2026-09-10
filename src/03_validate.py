@@ -6,6 +6,7 @@ transformation-specific checks are added in subsequent development stages.
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -17,14 +18,17 @@ import pandas as pd
 EXPECTED_LISTING_ROWS = 56_873
 EXPECTED_HOST_ROWS = 29_047
 
-DATE_FIELDS = [
+LISTING_DATE_FIELDS = [
     "last_scraped",
     "calendar_last_scraped",
-    "price_quote_checkin_date",
-    "price_quote_checkout_date",
     "first_review",
     "last_review",
 ]
+
+PRICE_QUOTE_DATE_MAPPING = {
+    "price_quote_checkin_date": "requested_checkin_date",
+    "price_quote_checkout_date": "requested_checkout_date",
+}
 
 LISTING_BOOLEAN_FIELDS = [
     "has_availability",
@@ -104,6 +108,18 @@ def parse_arguments() -> argparse.Namespace:
         required=True,
         help="Path to the normalised listing-amenities CSV file.",
     )
+    parser.add_argument(
+        "--price-quotes",
+        type=Path,
+        required=True,
+        help="Path to the normalised price-quotes CSV file.",
+    )
+    parser.add_argument(
+        "--price-quote-line-items",
+        type=Path,
+        required=True,
+        help="Path to the normalised quote line-items CSV file.",
+    )
 
     return parser.parse_args()
 
@@ -128,6 +144,8 @@ def validate_required_columns(
     listings: pd.DataFrame,
     hosts: pd.DataFrame,
     listing_amenities: pd.DataFrame,
+    price_quotes: pd.DataFrame,
+    price_quote_line_items: pd.DataFrame,
 ) -> None:
     """Check that each processed table contains its required key columns."""
     required_columns = {
@@ -142,6 +160,29 @@ def validate_required_columns(
         "listing_amenities": (
             listing_amenities,
             {"listing_id", "amenity"},
+        ),
+        "price_quotes": (
+            price_quotes,
+            {
+                "listing_id",
+                "total_price",
+                "price_per_night",
+                "requested_checkin_date",
+                "requested_checkout_date",
+                "line_items_missing",
+                "line_item_count",
+            },
+        ),
+        "price_quote_line_items": (
+            price_quote_line_items,
+            {
+                "listing_id",
+                "line_item_position",
+                "amount",
+                "item_type",
+                "description",
+                "price_string",
+            },
         ),
     }
 
@@ -253,6 +294,96 @@ def validate_referential_integrity(
         )
         raise ValueError(
             f"{missing_count} amenity rows reference missing listings."
+        )
+
+
+def validate_price_quote_outputs(
+    raw: pd.DataFrame,
+    listings: pd.DataFrame,
+    price_quotes: pd.DataFrame,
+    line_items: pd.DataFrame,
+) -> None:
+    """Validate structure and preservation of normalised price quotes."""
+    expected_quote_rows = int(
+        raw["price_quote_raw"].notna().sum()
+    )
+
+    if len(price_quotes) != expected_quote_rows:
+        raise ValueError(
+            "Unexpected number of price quotes: "
+            f"{len(price_quotes):,}"
+        )
+
+    if price_quotes["listing_id"].duplicated().any():
+        raise ValueError(
+            "Price-quotes table contains duplicate listing IDs."
+        )
+
+    if (
+        ~price_quotes["listing_id"].isin(listings["id"])
+    ).any():
+        raise ValueError(
+            "Price quotes contain invalid listing references."
+        )
+
+    if (
+        ~line_items["listing_id"].isin(listings["id"])
+    ).any():
+        raise ValueError(
+            "Quote line items contain invalid listing references."
+        )
+
+    duplicate_positions = line_items.duplicated(
+        subset=["listing_id", "line_item_position"]
+    )
+
+    if duplicate_positions.any():
+        raise ValueError(
+            "Duplicate quote line-item positions were found."
+        )
+
+    source_quote_columns = {
+        "price_quote_checkin_date",
+        "price_quote_checkout_date",
+        "price_quote_total_price",
+        "price_quote_price_per_night",
+        "price_quote_raw",
+    }
+
+    remaining_columns = source_quote_columns.intersection(
+        listings.columns
+    )
+
+    if remaining_columns:
+        remaining_names = ", ".join(
+            sorted(remaining_columns)
+        )
+        raise ValueError(
+            "Source quote fields remain in listings: "
+            f"{remaining_names}"
+        )
+
+    # Reconstruct the number of nested line items independently from the
+    # raw JSON rather than trusting the cleaning pipeline's output count.
+    expected_line_items = 0
+
+    for raw_quote in raw["price_quote_raw"].dropna():
+        quote = json.loads(str(raw_quote))["quote"]
+        nested_items = quote.get("raw_price_line_items")
+
+        if isinstance(nested_items, list):
+            expected_line_items += len(nested_items)
+
+    if len(line_items) != expected_line_items:
+        raise ValueError(
+            "Normalised line-item count differs from the raw JSON."
+        )
+
+    if int(price_quotes["line_item_count"].sum()) != len(
+        line_items
+    ):
+        raise ValueError(
+            "Stored line-item counts do not match the line-item table."
         )
 
 
@@ -371,12 +502,13 @@ def validate_cleaning_results(
 def validate_date_fields(
     raw: pd.DataFrame,
     listings: pd.DataFrame,
+    price_quotes: pd.DataFrame,
 ) -> None:
-    """Check that selected dates remain valid and unchanged."""
-    for field in DATE_FIELDS:
+    """Check that listing and quote dates remain valid and unchanged."""
+    for field in LISTING_DATE_FIELDS:
         if field not in raw.columns or field not in listings.columns:
             raise KeyError(
-                f"Required date field is missing: {field}"
+                f"Required listing date field is missing: {field}"
             )
 
         raw_parsed = pd.to_datetime(
@@ -390,34 +522,23 @@ def validate_date_fields(
             errors="coerce",
         )
 
-        # A non-missing source value that cannot be parsed would make the
-        # raw field unsuitable as a reliable validation baseline.
         raw_parse_failures = (
             raw[field].notna()
             & raw_parsed.isna()
         )
-
-        if raw_parse_failures.any():
-            failure_count = int(
-                raw_parse_failures.sum()
-            )
-            raise ValueError(
-                f"{field} contains {failure_count} raw parse failures."
-            )
-
-        # Cleaning must not turn an observed date into a missing value.
         processed_parse_failures = (
             listings[field].notna()
             & processed_parsed.isna()
         )
 
-        if processed_parse_failures.any():
-            failure_count = int(
-                processed_parse_failures.sum()
-            )
+        if raw_parse_failures.any():
             raise ValueError(
-                f"{field} contains {failure_count} processed "
-                "parse failures."
+                f"Raw date values cannot be parsed for {field}."
+            )
+
+        if processed_parse_failures.any():
+            raise ValueError(
+                f"Processed date values cannot be parsed for {field}."
             )
 
         if not raw[field].isna().equals(
@@ -427,11 +548,38 @@ def validate_date_fields(
                 f"Missingness changed for date field {field}."
             )
 
-        # Because listing row order is validated separately, the parsed
-        # dates can be compared position by position with the source.
         if not raw_parsed.equals(processed_parsed):
             raise ValueError(
                 f"Date values changed during cleaning for {field}."
+            )
+
+    raw_by_listing = raw.set_index("id")
+
+    for raw_field, quote_field in PRICE_QUOTE_DATE_MAPPING.items():
+        source_values = raw_by_listing.loc[
+            price_quotes["listing_id"],
+            raw_field,
+        ].reset_index(drop=True)
+
+        processed_values = price_quotes[
+            quote_field
+        ].reset_index(drop=True)
+
+        source_parsed = pd.to_datetime(
+            source_values,
+            format="%Y-%m-%d",
+            errors="coerce",
+        )
+        processed_parsed = pd.to_datetime(
+            processed_values,
+            format="%Y-%m-%d",
+            errors="coerce",
+        )
+
+        if not source_parsed.equals(processed_parsed):
+            raise ValueError(
+                "Normalised quote dates differ from source field "
+                f"{raw_field}."
             )
 
 
@@ -700,11 +848,21 @@ def main() -> None:
         args.amenities,
         "Listing amenities",
     )
+    price_quotes = load_dataset(
+        args.price_quotes,
+        "Price quotes",
+    )
+    price_quote_line_items = load_dataset(
+        args.price_quote_line_items,
+        "Price quote line items",
+    )
 
     validate_required_columns(
         listings,
         hosts,
         listing_amenities,
+        price_quotes,
+        price_quote_line_items,
     )
     validate_table_sizes(
         listings,
@@ -719,6 +877,12 @@ def main() -> None:
         hosts,
         listing_amenities,
     )
+    validate_price_quote_outputs(
+        raw,
+        listings,
+        price_quotes,
+        price_quote_line_items,
+    )
     validate_cleaning_results(
         raw,
         listings,
@@ -726,6 +890,7 @@ def main() -> None:
     validate_date_fields(
         raw,
         listings,
+        price_quotes,
     )
     validate_review_missingness(
         raw,
@@ -749,7 +914,15 @@ def main() -> None:
         f"{len(listing_amenities):,} rows"
     )
     print(
-        f"Date fields validated: {len(DATE_FIELDS)}"
+        f"Price quotes: {len(price_quotes):,} rows"
+    )
+    print(
+        "Price quote line items: "
+        f"{len(price_quote_line_items):,} rows"
+    )
+    print(
+        "Date fields validated: "
+        f"{len(LISTING_DATE_FIELDS) + len(PRICE_QUOTE_DATE_MAPPING)}"
     )
     print(
         "Structurally missing review ratings: "
