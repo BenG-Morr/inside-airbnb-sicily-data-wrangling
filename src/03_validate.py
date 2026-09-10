@@ -17,11 +17,34 @@ import pandas as pd
 EXPECTED_LISTING_ROWS = 56_873
 EXPECTED_HOST_ROWS = 29_047
 
+HOST_FIELDS_NORMALISED = [
+    "host_profile_id",
+    "host_profile_url",
+    "host_name",
+    "host_location",
+    "host_about",
+    "host_is_superhost",
+    "host_picture_url",
+    "host_listings_count",
+    "host_has_profile_pic",
+    "host_identity_verified",
+    "hosts_time_as_user_years",
+    "hosts_time_as_user_months",
+    "hosts_time_as_host_years",
+    "hosts_time_as_host_months",
+]
+
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line paths for the three processed datasets."""
     parser = argparse.ArgumentParser(
         description="Validate the processed Airbnb Sicily datasets."
+    )
+    parser.add_argument(
+        "--raw",
+        type=Path,
+        required=True,
+        help="Path to the original raw listings CSV file.",
     )
     parser.add_argument(
         "--listings",
@@ -193,10 +216,126 @@ def validate_referential_integrity(
         )
 
 
+def validate_cleaning_results(
+    raw: pd.DataFrame,
+    listings: pd.DataFrame,
+) -> None:
+    """Validate selected cleaning outcomes against the raw dataset."""
+    if not raw["id"].reset_index(drop=True).equals(
+        listings["id"].reset_index(drop=True)
+    ):
+        raise ValueError(
+            "Listing IDs or row order changed during cleaning."
+        )
+
+    required_processed_columns = {
+        "price_eur",
+        "bathrooms_clean",
+        "bathrooms_derived_from_text",
+        "bathroom_conflict_flag",
+    }
+    missing_columns = required_processed_columns.difference(
+        listings.columns
+    )
+
+    if missing_columns:
+        missing_names = ", ".join(
+            sorted(missing_columns)
+        )
+        raise ValueError(
+            "Processed listings are missing cleaning fields: "
+            f"{missing_names}"
+        )
+
+    # Convert the raw display representation independently and confirm
+    # that cleaning neither lost observed prices nor changed their values.
+    raw_price_numeric = pd.to_numeric(
+        raw["price"]
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False),
+        errors="coerce",
+    )
+
+    if raw_price_numeric.notna().sum() != listings["price_eur"].notna().sum():
+        raise ValueError(
+            "The number of observed numeric prices changed during cleaning."
+        )
+
+    price_comparison = pd.DataFrame(
+        {
+            "raw_price": raw_price_numeric,
+            "clean_price": listings["price_eur"],
+        }
+    ).dropna()
+
+    price_difference = (
+        price_comparison["raw_price"]
+        - price_comparison["clean_price"]
+    ).abs()
+
+    if price_difference.gt(0.001).any():
+        raise ValueError(
+            "Processed price_eur values differ from the raw prices."
+        )
+
+    # These snapshot-specific counts were established during profiling and
+    # provide regression checks for the documented bathroom treatment.
+    derived_bathrooms = int(
+        listings["bathrooms_derived_from_text"].sum()
+    )
+    remaining_missing = int(
+        listings["bathrooms_clean"].isna().sum()
+    )
+    bathroom_conflicts = int(
+        listings["bathroom_conflict_flag"].sum()
+    )
+
+    if derived_bathrooms != 8_792:
+        raise ValueError(
+            "Unexpected number of bathrooms derived from text: "
+            f"{derived_bathrooms:,}"
+        )
+
+    if remaining_missing != 55:
+        raise ValueError(
+            "Unexpected number of missing cleaned bathroom values: "
+            f"{remaining_missing:,}"
+        )
+
+    if bathroom_conflicts != 6:
+        raise ValueError(
+            "Unexpected number of bathroom conflicts: "
+            f"{bathroom_conflicts:,}"
+        )
+
+    # Structural normalisation should remove repeated or nested attributes
+    # from the listing-level table while preserving their separate tables.
+    forbidden_listing_columns = {
+        "amenities",
+        *HOST_FIELDS_NORMALISED,
+    }
+    remaining_columns = forbidden_listing_columns.intersection(
+        listings.columns
+    )
+
+    if remaining_columns:
+        remaining_names = ", ".join(
+            sorted(remaining_columns)
+        )
+        raise ValueError(
+            "Normalised fields remain in the listings table: "
+            f"{remaining_names}"
+        )
+
+
 def main() -> None:
     """Run the basic processed-data validation checks."""
     args = parse_arguments()
 
+    raw = load_dataset(
+        args.raw,
+        "Raw listings",
+    )
     listings = load_dataset(
         args.listings,
         "Listings",
@@ -227,6 +366,10 @@ def main() -> None:
         listings,
         hosts,
         listing_amenities,
+    )
+    validate_cleaning_results(
+        raw,
+        listings,
     )
 
     print("Processed-data validation passed.")
