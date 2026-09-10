@@ -787,31 +787,31 @@ def validate_amenities_normalisation(
             f"{missing_count} amenities reference missing listings."
         )
 
-        # Listings with an empty source amenities list legitimately produce no
-        # rows in the normalised relationship table. Verify that every listing
-        # omitted from listing_amenities is explained by such an empty list.
-        source_amenity_counts = original["amenities"].map(
-            lambda value: len(json.loads(str(value)))
-        )
-        zero_amenity_listing_ids = set(
-            original.loc[
-                source_amenity_counts.eq(0),
-                "id",
-            ]
-        )
+    # Listings with an empty source amenities list legitimately produce no
+    # rows in the normalised relationship table. Verify that every listing
+    # omitted from listing_amenities is explained by such an empty list.
+    source_amenity_counts = original["amenities"].map(
+        lambda value: len(json.loads(str(value)))
+    )
+    zero_amenity_listing_ids = set(
+        original.loc[
+            source_amenity_counts.eq(0),
+            "id",
+        ]
+    )
 
-        represented_listing_ids = set(
-            listing_amenities["listing_id"].unique()
-        )
-        omitted_listing_ids = (
-                set(listings["id"]) - represented_listing_ids
-        )
+    represented_listing_ids = set(
+        listing_amenities["listing_id"].unique()
+    )
+    omitted_listing_ids = (
+            set(listings["id"]) - represented_listing_ids
+    )
 
-        if omitted_listing_ids != zero_amenity_listing_ids:
-            raise ValueError(
-                "Listings omitted from the amenity table do not match "
-                "the listings with empty source amenity lists."
-            )
+    if omitted_listing_ids != zero_amenity_listing_ids:
+        raise ValueError(
+            "Listings omitted from the amenity table do not match "
+            "the listings with empty source amenity lists."
+        )
 
 
 def validate_date_fields(
