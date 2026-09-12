@@ -1,4 +1,4 @@
-This project uses the Inside Airbnb Sicily Detailed Listings dataset, snapshot 8 September 2026.
+This project uses the Inside Airbnb Sicily Detailed Listings dataset, snapshot 30 June 2026, downloaded on 7 September 2026.
 
 The raw dataset is not stored in this repository. Place the source file locally at:
 
